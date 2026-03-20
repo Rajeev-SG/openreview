@@ -8,21 +8,25 @@ const DEFAULT_OPENREVIEW_MODEL = "anthropic/claude-sonnet-4.6";
 export const getOpenReviewModel = () =>
   env.OPENREVIEW_MODEL ?? DEFAULT_OPENREVIEW_MODEL;
 
+const createOpenRouterModel = async (): Promise<CompatibleLanguageModel> => {
+  "use step";
+
+  const openrouter = createOpenAICompatible({
+    apiKey: env.OPENROUTER_API_KEY,
+    baseURL: "https://openrouter.ai/api/v1",
+    name: "openrouter",
+  });
+
+  return await Promise.resolve(
+    openrouter(getOpenReviewModel()) as unknown as CompatibleLanguageModel
+  );
+};
+
 export const getAgentModel = () => {
   const model = getOpenReviewModel();
 
   if (env.OPENROUTER_API_KEY) {
-    return (): Promise<CompatibleLanguageModel> => {
-      const openrouter = createOpenAICompatible({
-        apiKey: env.OPENROUTER_API_KEY,
-        baseURL: "https://openrouter.ai/api/v1",
-        name: "openrouter",
-      });
-
-      return Promise.resolve(
-        openrouter(model) as unknown as CompatibleLanguageModel
-      );
-    };
+    return createOpenRouterModel;
   }
 
   if (env.ANTHROPIC_API_KEY) {

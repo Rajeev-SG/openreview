@@ -25,7 +25,7 @@ export const createWriteFileTool = (sandboxId: string) =>
   tool({
     description:
       "Write content to a file in the sandbox. Creates parent directories if needed.",
-    execute: ({ content, path }) => writeFileStep(sandboxId, content, path),
+    execute: ({ content, path }) => writeFileStep(sandboxId, path, content),
     inputSchema: z.object({
       content: z.string().describe("The content to write to the file"),
       path: z.string().describe("The path where the file should be written"),
