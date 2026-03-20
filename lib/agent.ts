@@ -1,5 +1,6 @@
 import { DurableAgent } from "@workflow/ai/agent";
 
+import { getAgentModel } from "@/lib/model";
 import type { SkillMetadata } from "@/lib/skills";
 import { buildSkillsPrompt } from "@/lib/skills";
 import { createBashTool } from "@/lib/tools/bash";
@@ -79,7 +80,7 @@ export const createAgent = (
     .join("\n\n");
 
   return new DurableAgent({
-    model: "anthropic/claude-sonnet-4.6",
+    model: getAgentModel(),
     system,
     tools: {
       bash: createBashTool(sandboxId),

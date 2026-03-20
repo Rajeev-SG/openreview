@@ -5,6 +5,7 @@
     "": {
       "name": "openreview",
       "dependencies": {
+        "@ai-sdk/openai-compatible": "^2.0.31",
         "@chat-adapter/github": "^4.15.0",
         "@chat-adapter/state-memory": "^4.15.0",
         "@chat-adapter/state-redis": "^4.15.0",
