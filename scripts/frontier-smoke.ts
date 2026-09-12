@@ -428,6 +428,7 @@ const main = async (): Promise<void> => {
       outputUsdPerMTok: 4.4,
     },
     github,
+    isDurableState: true,
     kv,
     limits: {
       maxContextFiles: 6,

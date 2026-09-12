@@ -42,6 +42,14 @@ import type {
 export interface FrontierEngineDeps {
   budget: FrontierBudgetLimits;
   github: FrontierGitHub;
+  /**
+   * Whether `kv` outlives a single invocation. Every spend invariant (per-cycle
+   * review count, paid-call idempotency, dedup, daily/monthly ledger) is
+   * enforced through `kv`, so on an ephemeral store the ceilings cannot be
+   * honoured and a cold start can re-run a paid review. Absent a durable store
+   * the gate therefore fails closed instead of spending unbounded.
+   */
+  isDurableState: boolean;
   kv: FrontierKv;
   limits: FrontierLimits;
   log?: (event: string, meta?: Record<string, unknown>) => void;
@@ -1024,6 +1032,49 @@ export const handleFrontierEvent = async (
         status: "locked",
       };
     }
+  }
+
+  if (!deps.isDurableState) {
+    const state =
+      (await loadPrState(deps.kv, event.repo, event.prNumber)) ??
+      createInitialState({
+        headSha: event.headSha ?? "",
+        now,
+        prNumber: event.prNumber,
+        repo: event.repo,
+      });
+
+    state.lifecycle = "needs_manual_review";
+    emit(deps, "frontier.no_durable_state", {
+      prNumber: event.prNumber,
+      repo: event.repo,
+    });
+
+    try {
+      await setCheck(deps, state, {
+        conclusion: "neutral",
+        status: "completed",
+        summary:
+          "Frontier review disabled: durable state (REDIS_URL) is not configured. " +
+          "The per-cycle review limit, paid-call idempotency and daily/monthly " +
+          "budgets cannot be enforced on an ephemeral store, so no frontier " +
+          "tokens were spent.",
+        title: "Frontier review needs durable state",
+      });
+    } catch {
+      // Reporting is best-effort; the important part is that nothing was spent.
+    }
+
+    await savePrState(deps.kv, state, now);
+
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: "durable state not configured",
+      reviewCount: state.reviewCount,
+      status: "needs_durable_state",
+    };
   }
 
   try {

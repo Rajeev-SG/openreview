@@ -227,6 +227,7 @@ export const createHarness = (input?: {
         outputUsdPerMTok: 4.4,
       },
       github: fakeGitHub.github,
+      isDurableState: true,
       kv,
       limits,
       model: model.model,

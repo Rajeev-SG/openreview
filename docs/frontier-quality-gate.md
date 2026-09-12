@@ -170,7 +170,18 @@ type FrontierFinding = {
 | neutral                       | required CI failing; nothing was spent                     |
 | failure                       | review #2 left blocking P0/P1/P2 findings                  |
 
-## 7. State, idempotency and spend
+## 7. Durable state is required
+
+Every spend invariant — the per-cycle review limit, paid-call idempotency,
+delivery dedup and the daily/monthly ledger — is enforced through the state
+store. On an ephemeral store a cold start sees empty state, so a redelivered or
+retried event could run another paid review and reset the budgets.
+
+The gate therefore **fails closed when `REDIS_URL` is not configured**: it writes
+a neutral `frontier-quality` check explaining that durable state is missing and
+spends nothing. Missing configuration can never become unbounded spend.
+
+## 8. State, idempotency and spend
 
 Two reviews per cycle is enforced by `reviewCount` plus an idempotency key of
 `repo + PR + cycle_id + review_number + reviewed_sha + packet_hash`. Duplicate
@@ -233,7 +244,7 @@ review is skipped with `0` calls and no fallback model.
 Exact OpenRouter usage (`prompt_tokens`, `completion_tokens`, `cost`, model) is
 recorded per review in the PR state and in daily/monthly spend ledgers.
 
-## 8. Repo configuration
+## 9. Repo configuration
 
 Optional `.github/frontier-review.yml` (or `.yaml`, or `.github/frontier.yml`):
 
@@ -248,7 +259,7 @@ frontier:
 Malformed configuration falls back to defaults rather than breaking the
 webhook.
 
-## 9. GitHub App permissions
+## 10. GitHub App permissions
 
 The automatic path needs, in addition to the existing manual-path permissions:
 
@@ -257,7 +268,7 @@ The automatic path needs, in addition to the existing manual-path permissions:
 - Subscribed events: **Pull request**, **Check run** (plus the existing
   issue-comment and review-comment events)
 
-## 10. Tests
+## 11. Tests
 
 `bun test` covers the deterministic gate, packet caps and redaction, budget
 guard, response parsing, request pinning, webhook routing (including manual

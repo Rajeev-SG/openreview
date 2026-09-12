@@ -426,3 +426,20 @@ describe("budget reservation", () => {
     expect(spend.daily.calls).toBe(1);
   });
 });
+
+describe("durable state requirement", () => {
+  test("fails closed with zero spend when the store is ephemeral", async () => {
+    const harness = createHarness({ reviews: [clean] });
+    const deps = { ...harness.deps, isDurableState: false };
+
+    const outcome = await handleFrontierEvent(deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("needs_durable_state");
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(0);
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("neutral");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.summary).toContain(
+      "REDIS_URL"
+    );
+  });
+});
