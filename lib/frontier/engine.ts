@@ -517,11 +517,10 @@ const runFirstReview = async (
   }
 
   await deps.kv.set(key, 1, IDEMPOTENCY_TTL_MS);
-  // Replace the reservation with the real billed cost.
   await reconcileBudget(
     deps.kv,
     now,
-    deps.budget.maxCallUsd,
+    budget.reservationId,
     response.usage.costUsd
   );
 
@@ -774,7 +773,7 @@ const attemptFinalReview = async (
   await reconcileBudget(
     deps.kv,
     now,
-    deps.budget.maxCallUsd,
+    budget.reservationId,
     response.usage.costUsd
   );
 

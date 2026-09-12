@@ -193,10 +193,16 @@ The ceilings are **hard bounds**, not advisory. Before a review runs the engine
 reserves `FRONTIER_MAX_CALL_USD` against both the daily and the monthly ledger
 and refuses the review unless the remaining allowance can cover it; after the
 call the reservation is reconciled to the real billed cost. A call whose real
-cost cannot be determined keeps its reservation (conservative). Reservations are
-serialised under a dedicated spend lock, because the daily and monthly keys are
-shared across PRs and the per-PR lock alone would allow concurrent reviews to
-lose increments.
+cost cannot be determined keeps its reservation (conservative).
+
+Reservations carry an identity: the reservation record is deleted when it is
+applied, so a repeated or retried reconciliation is a no-op instead of a double
+adjustment. Every ledger mutation — reserve and reconcile — runs under a single
+dedicated spend lock, because the daily and monthly keys are shared across PRs
+and the per-PR lock alone would let concurrent reviews (or reconciliations) lose
+increments and overshoot. `FRONTIER_MAX_CALL_USD` must be greater than zero, and
+a state store without distributed locking is refused rather than trusted
+implicitly; both fail closed with zero model calls.
 
 The guard runs **before** the request and fails closed: if the ledger cannot be
 read, or a budget is 0, or the remaining allowance cannot cover one review, the

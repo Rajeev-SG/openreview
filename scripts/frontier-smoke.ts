@@ -6,7 +6,7 @@
  * nothing. Prints exact token usage and cost per review.
  *
  * Usage:
- *   bun run smoke:frontier                 # review #1 + free repair push
+ *   bun run smoke:frontier                  # review #1 + a free repair push
  *   bun run smoke:frontier -- --cycle <sha> # full two-call cycle from <sha>
  *
  * Reads OPENROUTER_API_KEY from the environment or a local .env.local.
@@ -89,9 +89,6 @@ interface ReviewRecord {
     problem: string;
     severity: string;
   }[];
-  packetHash: string;
-  reviewNumber: number;
-  reviewedSha: string;
   usage: {
     costUsd: number;
     inputTokens: number;
@@ -103,9 +100,7 @@ interface ReviewRecord {
 
 interface StateView {
   cycleId?: number;
-  gate?: { overridden?: string; score?: number; threshold?: number };
   lifecycle?: string;
-  reviewCount?: number;
   reviews?: ReviewRecord[];
 }
 
@@ -119,16 +114,225 @@ const readState = async (
 const parseArgs = (): { prNumber?: string; reviewedSha?: string } => {
   const args = process.argv.slice(2);
   const cycleIndex = args.indexOf("--cycle");
+  const prNumber = args.find((arg) => /^\d+$/.test(arg));
 
   if (cycleIndex === -1) {
-    return { prNumber: args.find((arg) => /^\d+$/.test(arg)) };
+    return { prNumber };
   }
 
-  return {
-    prNumber: args.find((arg) => /^\d+$/.test(arg)),
-    reviewedSha: args[cycleIndex + 1],
-  };
+  return { prNumber, reviewedSha: args[cycleIndex + 1] };
 };
+
+interface LiveGitHubInput {
+  checkRuns: ApiCheckRun[];
+  headRefOid: string;
+  pr: PullRequestView;
+  prDiff: string;
+  repo: string;
+  reviewOneDiff: string;
+  reviewOneFiles: GateChangedFile[];
+  reviewedSha?: string;
+}
+
+/** GitHub double backed by real PR data, plus the captured check updates. */
+const createLiveGitHub = (
+  input: LiveGitHubInput
+): { checkUpdates: FrontierCheckUpdate[]; github: FrontierGitHub } => {
+  const checkUpdates: FrontierCheckUpdate[] = [];
+  let checkId = 0;
+
+  const github: FrontierGitHub = {
+    getChangedFiles: async () => {
+      await settle();
+      return input.reviewOneFiles;
+    },
+    getDeltaDiff: async (_repo, fromSha, toSha) => {
+      await settle();
+
+      if (fromSha === input.reviewedSha && toSha === input.headRefOid) {
+        return git(["diff", fromSha, toSha]);
+      }
+
+      return input.prDiff;
+    },
+    getDiff: async () => {
+      await settle();
+      return input.reviewOneDiff;
+    },
+    getFileContent: async (_repo, path) => {
+      await settle();
+      const file = Bun.file(path);
+      return (await file.exists()) ? file.text() : null;
+    },
+    getLinkedIssue: async () => {
+      await settle();
+      return null;
+    },
+    getPullRequest: async () => {
+      await settle();
+      return input.pr;
+    },
+    getRepoConfig: async () => {
+      await settle();
+      const file = Bun.file(".github/frontier-review.yml");
+      return (await file.exists()) ? file.text() : null;
+    },
+    getRequiredChecks: async () => {
+      await settle();
+      return ["verify"];
+    },
+    listCheckRuns: async (): Promise<CheckRunView[]> => {
+      await settle();
+      return input.checkRuns;
+    },
+    postComment: async (_repo, _prNumber, body) => {
+      await settle();
+      checkUpdates.push({
+        details: body.slice(0, 200),
+        headSha: input.pr.headSha,
+        name: "pr-comment",
+        prNumber: input.pr.number,
+        repo: input.repo,
+        status: "completed",
+        summary: "PR comment posted",
+        title: "PR comment",
+      });
+    },
+    setFrontierCheck: async (update) => {
+      await settle();
+      checkUpdates.push(update);
+      checkId += 1;
+      return checkId;
+    },
+  };
+
+  return { checkUpdates, github };
+};
+
+interface CycleInput {
+  deps: FrontierEngineDeps;
+  headRefOid: string;
+  kv: ReturnType<typeof createMemoryKv>;
+  pr: PullRequestView;
+  repo: string;
+  reviewedSha?: string;
+}
+
+const printLatest = async (
+  kv: ReturnType<typeof createMemoryKv>,
+  repo: string,
+  prNumber: number
+): Promise<void> => {
+  const state = await readState(kv, repo, prNumber);
+  const latest = state?.reviews?.at(-1);
+
+  if (!latest) {
+    return;
+  }
+
+  console.log(
+    `  usage     model=${latest.usage.model} in=${latest.usage.inputTokens} out=${latest.usage.outputTokens} cost=$${latest.usage.costUsd.toFixed(6)}`
+  );
+
+  for (const item of latest.findings) {
+    console.log(
+      `  finding   [${item.severity}] ${item.id} (${item.category}) ${item.problem}`
+    );
+  }
+};
+
+/** Review #1, the free repair push, and (when armed) review #2. */
+const runCycle = async (input: CycleInput): Promise<void> => {
+  const { deps, headRefOid, kv, pr, repo, reviewedSha } = input;
+
+  const event = (overrides: Partial<FrontierEvent>): FrontierEvent => ({
+    action: "opened",
+    deliveryId: `smoke-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
+    headSha: pr.headSha,
+    kind: "pull_request",
+    prNumber: pr.number,
+    repo,
+    ...overrides,
+  });
+
+  const first = await handleFrontierEvent(deps, event({}));
+  console.log(`review #1   ${first.status} calls=${first.calls}`);
+  await printLatest(kv, repo, pr.number);
+
+  // The repair push must cost nothing.
+  pr.headSha = headRefOid;
+  const repairPush = await handleFrontierEvent(
+    deps,
+    event({ action: "synchronize" })
+  );
+  console.log(
+    `repair push ${repairPush.status} calls=${repairPush.calls} cost=$${repairPush.costUsd}`
+  );
+
+  if (repairPush.calls !== 0) {
+    throw new Error("repair push spent money: the invariant is broken");
+  }
+
+  if (!reviewedSha) {
+    const spend = await readSpend(kv, new Date());
+    console.log(
+      `total       calls=${spend.daily.calls} cost=$${spend.daily.costUsd.toFixed(6)}`
+    );
+    console.log("");
+    console.log("Run with `--cycle <sha>` for the full two-call cycle.");
+    return;
+  }
+
+  const final = await handleFrontierEvent(
+    deps,
+    event({ action: "labeled", kind: "label", label: FINAL_SIGNAL_LABEL })
+  );
+  console.log(`review #2   ${final.status} calls=${final.calls}`);
+  await printLatest(kv, repo, pr.number);
+
+  const afterFinal = await handleFrontierEvent(
+    deps,
+    event({ action: "synchronize" })
+  );
+  console.log(
+    `later push  ${afterFinal.status} calls=${afterFinal.calls} cost=$${afterFinal.costUsd}`
+  );
+
+  const state = await readState(kv, repo, pr.number);
+  const spend = await readSpend(kv, new Date());
+  const reviews = state?.reviews ?? [];
+  const billed = reviews.reduce(
+    (total, review) => total + review.usage.costUsd,
+    0
+  );
+
+  console.log("");
+  console.log(
+    `cycle       reviews=${reviews.length} cycleId=${state?.cycleId ?? "?"} lifecycle=${state?.lifecycle ?? "?"}`
+  );
+  console.log(
+    `cycle spend calls=${spend.daily.calls} cost=$${spend.daily.costUsd.toFixed(6)} sum(reviews)=$${billed.toFixed(6)}`
+  );
+
+  if (reviews.length > 2) {
+    throw new Error("more than two paid reviews in one cycle");
+  }
+};
+
+const filesFromGit = (from: string, to: string): GateChangedFile[] =>
+  git(["diff", "--numstat", from, to])
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => {
+      const [additions, deletions, path] = line.split("\t");
+
+      return {
+        additions: Number(additions) || 0,
+        deletions: Number(deletions) || 0,
+        path,
+        status: "modified",
+      };
+    });
 
 const main = async (): Promise<void> => {
   await loadEnvFile(".env.local");
@@ -174,14 +378,22 @@ const main = async (): Promise<void> => {
     ) as { check_runs: ApiCheckRun[] }
   ).check_runs;
 
-  const diff = gh(["pr", "diff", String(prNumber)]);
+  const prDiff = gh(["pr", "diff", String(prNumber)]);
 
-  const files: GateChangedFile[] = apiFiles.map((file) => ({
-    additions: file.additions,
-    deletions: file.deletions,
-    path: file.filename,
-    status: file.status,
-  }));
+  // With --cycle, review #1 sees the tree as of the reviewed commit, so the
+  // two-call cycle is coherent: review #2 is the delta from there.
+  const reviewOneFiles = reviewedSha
+    ? filesFromGit(view.baseRefOid, reviewedSha)
+    : apiFiles.map((file) => ({
+        additions: file.additions,
+        deletions: file.deletions,
+        path: file.filename,
+        status: file.status,
+      }));
+
+  const reviewOneDiff = reviewedSha
+    ? git(["diff", view.baseRefOid, reviewedSha])
+    : prDiff;
 
   const pr: PullRequestView = {
     baseBranch: view.baseRefName,
@@ -195,76 +407,18 @@ const main = async (): Promise<void> => {
     title: view.title,
   };
 
-  const checkUpdates: FrontierCheckUpdate[] = [];
-  let checkId = 0;
-
-  const github: FrontierGitHub = {
-    getChangedFiles: async () => {
-      await settle();
-      return files;
-    },
-    getDeltaDiff: async (_repo, fromSha, toSha) => {
-      await settle();
-
-      if (fromSha === reviewedSha && toSha === view.headRefOid) {
-        return git(["diff", fromSha, toSha]);
-      }
-
-      return diff;
-    },
-    getDiff: async () => {
-      await settle();
-      return diff;
-    },
-    getFileContent: async (_repo, path) => {
-      await settle();
-      const file = Bun.file(path);
-      return (await file.exists()) ? file.text() : null;
-    },
-    getLinkedIssue: async () => {
-      await settle();
-      return null;
-    },
-    getPullRequest: async () => {
-      await settle();
-      return pr;
-    },
-    getRepoConfig: async () => {
-      await settle();
-      const file = Bun.file(".github/frontier-review.yml");
-      return (await file.exists()) ? file.text() : null;
-    },
-    getRequiredChecks: async () => {
-      await settle();
-      return ["verify"];
-    },
-    listCheckRuns: async (): Promise<CheckRunView[]> => {
-      await settle();
-      return checkRuns;
-    },
-    postComment: async (_repo, _prNumber, body) => {
-      await settle();
-      checkUpdates.push({
-        details: body.slice(0, 200),
-        headSha: pr.headSha,
-        name: "pr-comment",
-        prNumber: pr.number,
-        repo,
-        status: "completed",
-        summary: "PR comment posted",
-        title: "PR comment",
-      });
-    },
-    setFrontierCheck: async (update) => {
-      await settle();
-      checkUpdates.push(update);
-      checkId += 1;
-      return checkId;
-    },
-  };
+  const { checkUpdates, github } = createLiveGitHub({
+    checkRuns,
+    headRefOid: view.headRefOid,
+    pr,
+    prDiff,
+    repo,
+    reviewOneDiff,
+    reviewOneFiles,
+    reviewedSha,
+  });
 
   const kv = createMemoryKv();
-
   const deps: FrontierEngineDeps = {
     budget: { dailyUsd: 5, maxCallUsd: MAX_CALL_USD, monthlyUsd: 50 },
     github,
@@ -285,20 +439,11 @@ const main = async (): Promise<void> => {
     model: createOpenRouterFrontierModel({ apiKey }),
   };
 
-  const event = (overrides: Partial<FrontierEvent>): FrontierEvent => ({
-    action: "opened",
-    deliveryId: `smoke-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
-    headSha: pr.headSha,
-    kind: "pull_request",
-    prNumber: pr.number,
-    repo,
-    ...overrides,
-  });
-
   console.log(`repo        ${repo}`);
   console.log(`pr          #${pr.number} ${pr.title}`);
-  console.log(`head        ${pr.headSha.slice(0, 12)}`);
-  console.log(`files       ${files.length}`);
+  console.log(`reviewedAt  ${pr.headSha.slice(0, 12)}`);
+  console.log(`prHead      ${view.headRefOid.slice(0, 12)}`);
+  console.log(`files       ${reviewOneFiles.length}`);
   console.log(
     `checks      ${
       checkRuns
@@ -308,93 +453,19 @@ const main = async (): Promise<void> => {
   );
   console.log("");
 
-  const report = async (label: string, lines: string[]): Promise<void> => {
-    const state = await readState(kv, repo, pr.number);
-    const reviews = state?.reviews ?? [];
-    const latest = reviews.at(-1);
-
-    console.log(`${label} ${lines.join(" ")}`);
-
-    if (!latest) {
-      return;
-    }
-
-    console.log(
-      `  usage     model=${latest.usage.model} in=${latest.usage.inputTokens} out=${latest.usage.outputTokens} cost=$${latest.usage.costUsd.toFixed(6)}`
-    );
-
-    for (const item of latest.findings) {
-      console.log(
-        `  finding   [${item.severity}] ${item.id} (${item.category}) ${item.problem}`
-      );
-    }
-  };
-
-  const first = await handleFrontierEvent(deps, event({}));
-  await report("review #1 ", [
-    `${first.status} calls=${first.calls}`,
-    `gate=${first.status === "skipped" ? "skip" : "review"}`,
-  ]);
-
-  // A repair push must cost nothing.
-  pr.headSha = view.headRefOid;
-  const repairPush = await handleFrontierEvent(
+  await runCycle({
     deps,
-    event({ action: "synchronize" })
-  );
-  console.log(
-    `repair push ${repairPush.status} calls=${repairPush.calls} cost=$${repairPush.costUsd}`
-  );
-
-  if (repairPush.calls !== 0) {
-    throw new Error("repair push spent money: the invariant is broken");
-  }
-
-  if (!reviewedSha) {
-    const spend = await readSpend(kv, new Date());
-    console.log(
-      `cycle total calls=${spend.daily.calls} cost=$${spend.daily.costUsd.toFixed(6)}`
-    );
-    console.log("");
-    console.log(
-      "Run with `--cycle <reviewedSha>` for the full two-call cycle."
-    );
-    return;
-  }
-
-  const final = await handleFrontierEvent(
-    deps,
-    event({ action: "labeled", kind: "label", label: FINAL_SIGNAL_LABEL })
-  );
-  await report("review #2 ", [`${final.status} calls=${final.calls}`]);
-
-  const afterFinal = await handleFrontierEvent(
-    deps,
-    event({ action: "synchronize" })
-  );
-  console.log(
-    `later push  ${afterFinal.status} calls=${afterFinal.calls} cost=$${afterFinal.costUsd}`
-  );
-
-  const state = await readState(kv, repo, pr.number);
-  const spend = await readSpend(kv, new Date());
-  const cycleCalls = state?.reviews?.length ?? 0;
-  const paid = (state?.reviews ?? []).reduce(
-    (total, review) => total + review.usage.costUsd,
-    0
-  );
+    headRefOid: view.headRefOid,
+    kv,
+    pr,
+    repo,
+    reviewedSha,
+  });
 
   console.log("");
   console.log(
-    `cycle       reviews=${cycleCalls} cycleId=${state?.cycleId ?? "?"} lifecycle=${state?.lifecycle ?? "?"}`
+    `checks seen ${checkUpdates.map((update) => `${update.name}:${update.status}:${update.conclusion ?? "-"}`).join(", ")}`
   );
-  console.log(
-    `cycle spend calls=${spend.daily.calls} cost=$${spend.daily.costUsd.toFixed(6)} (sum of reviews=$${paid.toFixed(6)})`
-  );
-
-  if (cycleCalls > 2) {
-    throw new Error("more than two paid reviews in one cycle");
-  }
 };
 
 await main();

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { FrontierKv } from "@/lib/frontier/store";
 import type {
   FrontierBudgetLimits,
@@ -8,6 +10,7 @@ import type {
 const EMPTY_LEDGER: FrontierSpendLedger = { calls: 0, costUsd: 0 };
 const SPEND_LOCK_KEY = "frontier:lock:spend";
 const SPEND_LOCK_TTL_MS = 30_000;
+const RESERVATION_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 
 export const dayKey = (now: Date): string =>
   `frontier:spend:day:${now.toISOString().slice(0, 10)}`;
@@ -15,9 +18,18 @@ export const dayKey = (now: Date): string =>
 export const monthKey = (now: Date): string =>
   `frontier:spend:month:${now.toISOString().slice(0, 7)}`;
 
+export const reservationKey = (reservationId: string): string =>
+  `frontier:reservation:${reservationId}`;
+
 export interface BudgetDecision {
   allowed: boolean;
   reason?: string;
+  reservationId?: string;
+}
+
+interface Reservation {
+  createdAt: string;
+  reserveUsd: number;
 }
 
 const round6 = (value: number): number => Number(value.toFixed(6));
@@ -37,16 +49,19 @@ const writeLedger = async (
 };
 
 /**
- * Serialise ledger mutations. Daily and monthly keys are shared across PRs, so
- * the per-PR lock is not enough: without this, concurrent reviews can lose
- * increments and overshoot the ceiling.
+ * Serialise every ledger mutation. The daily and monthly keys are shared across
+ * PRs, so the per-PR lock is not enough: without this, concurrent reviews (and
+ * reconciliations) could lose increments and overshoot the ceiling.
+ *
+ * A store without distributed locking cannot make that guarantee, so this fails
+ * closed rather than pretending to be safe.
  */
 const withSpendLock = async <T>(
   kv: FrontierKv,
   task: () => Promise<T>
 ): Promise<T> => {
   if (!(kv.acquireLock && kv.releaseLock)) {
-    return task();
+    throw new Error("state store does not support locking");
   }
 
   const lock = await kv.acquireLock(SPEND_LOCK_KEY, SPEND_LOCK_TTL_MS);
@@ -74,8 +89,8 @@ const adjust = (
 /**
  * Reserve a conservative upper bound for one review **before** it runs, so the
  * configured ceilings are hard spend bounds rather than advisory. Fails closed
- * when the ledger cannot be read or the remaining allowance cannot cover the
- * reservation.
+ * when the ledger cannot be read, when locking is unavailable, or when the
+ * remaining allowance cannot cover the reservation.
  */
 export const reserveBudget = async (
   kv: FrontierKv,
@@ -83,12 +98,21 @@ export const reserveBudget = async (
   limits: FrontierBudgetLimits,
   reserveUsd: number
 ): Promise<BudgetDecision> => {
-  const daily = dayKey(now);
-  const monthly = monthKey(now);
-
   if (limits.dailyUsd <= 0 || limits.monthlyUsd <= 0) {
     return { allowed: false, reason: "frontier budget disabled" };
   }
+
+  if (!(reserveUsd > 0)) {
+    return {
+      allowed: false,
+      reason:
+        "FRONTIER_MAX_CALL_USD must be > 0: a zero reservation cannot bound spend",
+    };
+  }
+
+  const daily = dayKey(now);
+  const monthly = monthKey(now);
+  const reservationId = randomUUID();
 
   try {
     return await withSpendLock(kv, async () => {
@@ -111,8 +135,16 @@ export const reserveBudget = async (
 
       await writeLedger(kv, daily, adjust(dailyLedger, reserveUsd, 1));
       await writeLedger(kv, monthly, adjust(monthlyLedger, reserveUsd, 1));
+      await kv.set(
+        reservationKey(reservationId),
+        {
+          createdAt: now.toISOString(),
+          reserveUsd,
+        } satisfies Reservation,
+        RESERVATION_TTL_MS
+      );
 
-      return { allowed: true };
+      return { allowed: true, reservationId };
     });
   } catch (error) {
     return {
@@ -125,25 +157,44 @@ export const reserveBudget = async (
 };
 
 /**
- * Replace a reservation with the actual billed cost. Callers that cannot
- * determine the real cost must keep the reservation (conservative).
+ * Replace a reservation with the actual billed cost. Idempotent: the
+ * reservation record is the reservation's identity, and it is deleted once
+ * applied, so a repeated or retried reconciliation is a no-op rather than a
+ * double adjustment. Callers that cannot determine the real cost must not
+ * reconcile, which leaves the reservation in place (conservative).
  */
 export const reconcileBudget = async (
   kv: FrontierKv,
   now: Date,
-  reserveUsd: number,
+  reservationId: string | undefined,
   actualUsd: number
-): Promise<void> => {
-  const delta = actualUsd - reserveUsd;
-
-  if (delta === 0) {
-    return;
+): Promise<boolean> => {
+  if (!reservationId) {
+    return false;
   }
 
-  for (const key of [dayKey(now), monthKey(now)]) {
-    const ledger = await readLedger(kv, key);
-    await writeLedger(kv, key, adjust(ledger, delta, 0));
-  }
+  const key = reservationKey(reservationId);
+
+  return await withSpendLock(kv, async () => {
+    const reservation = await kv.get<Reservation>(key);
+
+    if (!reservation) {
+      return false;
+    }
+
+    const delta = actualUsd - reservation.reserveUsd;
+
+    if (delta !== 0) {
+      for (const ledgerKey of [dayKey(now), monthKey(now)]) {
+        const ledger = await readLedger(kv, ledgerKey);
+        await writeLedger(kv, ledgerKey, adjust(ledger, delta, 0));
+      }
+    }
+
+    await kv.delete(key);
+
+    return true;
+  });
 };
 
 /** Telemetry record for one paid review. The ledger is reserved/reconciled. */
