@@ -203,11 +203,20 @@ tokens (`FRONTIER_*_USD_PER_MTOK`), plus a system-prompt allowance, so it scales
 with the caps that actually determine the billable size of a request.
 `FRONTIER_MAX_CALL_USD` is a floor an operator can raise.
 
-Because a token cannot be shorter than one character, the input estimate divides
-the packet cap by 1, which is the only defensible upper bound; denser ratios
-under-reserve on punctuation-heavy, code-heavy or non-English content. The
-reservation is therefore deliberately pessimistic and is reconciled down to the
-real billed cost after each review.
+At the default caps and prices this reservation is about **$2.78** per review
+against an observed real cost of roughly $0.16, because it bounds the worst case
+rather than the expected case. Keep `FRONTIER_DAILY_BUDGET_USD` comfortably
+above it (at least ~4x, so ~$12) or shrink the bound by lowering
+`FRONTIER_MAX_PACKET_CHARS` / `FRONTIER_MAX_OUTPUT_TOKENS` / the price settings,
+otherwise the guard will start refusing reviews well before the nominal daily
+ceiling is reached.
+
+A token can never be shorter than one byte, and one character is at most four
+UTF-8 bytes, so the input estimate reserves four bytes per permitted character.
+A per-character ratio under-reserves on punctuation-heavy, code-heavy,
+non-English or emoji content under byte-level tokenisation. The reservation is
+therefore deliberately pessimistic and is reconciled down to the real billed
+cost after each review.
 
 Reservations carry an identity: the reservation record is deleted when it is
 claimed, before the ledger is adjusted, so an interrupted reconciliation can

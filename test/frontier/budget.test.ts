@@ -60,10 +60,10 @@ describe("deriveReservationUsd", () => {
       0
     );
 
-    // Worst case: one character per token, plus the system prompt allowance,
-    // plus the full output cap.
+    // Worst case: four UTF-8 bytes per permitted character, plus the system
+    // prompt allowance, plus the full output cap.
     expect(derived).toBeCloseTo(
-      ((50_000 + 2000) * 13 + 3000 * 50) / 1_000_000,
+      ((50_000 * 4 + 2000) * 13 + 3000 * 50) / 1_000_000,
       6
     );
   });
@@ -82,7 +82,7 @@ describe("deriveReservationUsd", () => {
     expect(derived).toBe(0.5);
   });
 
-  test("uses the worst-case one-character-per-token bound", () => {
+  test("uses the worst-case bytes-per-character bound", () => {
     const derived = deriveReservationUsd(
       {
         inputUsdPerMTok: 1,
@@ -93,8 +93,8 @@ describe("deriveReservationUsd", () => {
       0
     );
 
-    // 10,000 chars + 2,000 system tokens, at $1/Mtok.
-    expect(derived).toBeCloseTo(0.012, 6);
+    // 10,000 chars at four bytes each, + 2,000 system tokens, at $1/Mtok.
+    expect(derived).toBeCloseTo(0.042, 6);
   });
 
   test("grows with the caps", () => {

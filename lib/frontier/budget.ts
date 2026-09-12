@@ -24,12 +24,13 @@ export const reservationKey = (reservationId: string): string =>
 const round6 = (value: number): number => Number(value.toFixed(6));
 
 /**
- * Worst-case characters per token. A token cannot be shorter than one
- * character, so dividing by 1 is the only defensible upper bound for the input
- * tokens a permitted packet can produce. Anything denser would under-reserve on
- * punctuation-heavy, code-heavy or non-English content.
+ * Worst-case UTF-8 bytes per character. Byte-level BPE can emit more than one
+ * token per character (an astral character is two UTF-16 code units and up to
+ * four bytes), but a token can never be shorter than one byte, so bytes are a
+ * true upper bound on tokens. Four bytes per character is the worst case for
+ * any JavaScript string.
  */
-const CHARS_PER_TOKEN_FLOOR = 1;
+const BYTES_PER_CHAR = 4;
 /** Headroom for the system prompt and schema, which are not in the packet. */
 const SYSTEM_PROMPT_TOKENS = 2000;
 
@@ -50,8 +51,7 @@ export const deriveReservationUsd = (
   floorUsd: number
 ): number => {
   const inputTokens =
-    Math.ceil(input.maxPacketChars / CHARS_PER_TOKEN_FLOOR) +
-    SYSTEM_PROMPT_TOKENS;
+    input.maxPacketChars * BYTES_PER_CHAR + SYSTEM_PROMPT_TOKENS;
   const derived =
     (inputTokens * input.inputUsdPerMTok +
       input.maxOutputTokens * input.outputUsdPerMTok) /
