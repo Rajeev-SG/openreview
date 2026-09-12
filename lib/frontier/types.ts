@@ -78,6 +78,8 @@ export interface FrontierReviewRecord {
 export interface FrontierPrState {
   baselineSha?: string;
   checkRunId?: number;
+  /** When the gate first parked awaiting required CI, for the bounded wait. */
+  ciWaitingSince?: string;
   cycleId: number;
   findings?: FrontierFinding[];
   finalReviewSha?: string;

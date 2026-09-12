@@ -270,11 +270,18 @@ export const createOctokitFrontierGitHub = (
         // "no required checks" - the caller would spend frontier tokens without
         // being able to verify CI. Report it as unknown and let the gate fail closed.
         if (kind === "unreadable") {
+          // 403 has several causes (missing administration permission, the repo
+          // not being selected in the installation, org restrictions). Report
+          // GitHub's own message rather than asserting one cause.
+          const apiMessage = (
+            error as { response?: { data?: { message?: string } } }
+          ).response?.data?.message;
+
           return {
             known: false,
             reason:
-              "the GitHub App cannot read branch protection (it needs repository " +
-              "'administration' permission), or set FRONTIER_REQUIRED_CHECKS",
+              `required CI could not be determined (${apiMessage ?? "permission denied reading branch protection"}). ` +
+              "Grant repository 'administration: read' on the App, or set FRONTIER_REQUIRED_CHECKS",
           };
         }
 
