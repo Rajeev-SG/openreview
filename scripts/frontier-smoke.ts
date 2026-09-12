@@ -256,7 +256,9 @@ const runCycle = async (input: CycleInput): Promise<void> => {
   });
 
   const first = await handleFrontierEvent(deps, event({}));
-  console.log(`review #1   ${first.status} calls=${first.calls}`);
+  console.log(
+    `review #1   ${first.status} calls=${first.calls} detail=${first.detail ?? "-"}`
+  );
   await printLatest(kv, repo, pr.number);
 
   // The repair push must cost nothing.

@@ -21,6 +21,28 @@ export interface FrontierModelResponse {
   usage: ModelUsage;
 }
 
+/**
+ * Thrown when every attempt was billed but none produced a usable review. The
+ * accumulated cost travels with the error so the caller reconciles the spend
+ * ledger instead of over-reserving.
+ */
+export class FrontierModelError extends Error {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly spentUsd: number;
+
+  constructor(
+    message: string,
+    spent: { inputTokens: number; outputTokens: number; spentUsd: number }
+  ) {
+    super(message);
+    this.name = "FrontierModelError";
+    this.spentUsd = spent.spentUsd;
+    this.inputTokens = spent.inputTokens;
+    this.outputTokens = spent.outputTokens;
+  }
+}
+
 export interface FrontierModelClient {
   review: (request: FrontierModelRequest) => Promise<FrontierModelResponse>;
 }
@@ -128,6 +150,23 @@ export const parseFrontierResponse = (raw: unknown): FrontierReview => {
   };
 };
 
+/**
+ * Payload failures (bad JSON, or JSON that fails the review schema) are the
+ * retryable class that is neither an abort nor an HTTP error.
+ */
+const isPayloadError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.name === "SyntaxError" ||
+    error.message.startsWith(
+      "Frontier model returned an invalid review payload"
+    )
+  );
+};
+
 const extractJson = (content: string): unknown => {
   const trimmed = content
     .trim()
@@ -187,89 +226,118 @@ export const createOpenRouterFrontierModel = (
   const doFetch = options.fetchImpl ?? fetch;
   const maxAttempts = options.maxAttempts ?? 2;
 
+  /** One billed HTTP attempt; throws on any failure, returns the raw content. */
+  const attemptOnce = async (
+    request: FrontierModelRequest
+  ): Promise<{ content: string; usage: ModelUsage }> => {
+    const response = await doFetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        body: JSON.stringify({
+          max_tokens: request.maxTokens,
+          messages: [
+            { content: request.system, role: "system" },
+            { content: request.user, role: "user" },
+          ],
+          model,
+          provider: { require_parameters: true },
+          reasoning: { effort: FRONTIER_REASONING_EFFORT, exclude: true },
+          response_format: {
+            json_schema: {
+              name: "frontier_review",
+              schema: reviewJsonSchema(),
+              strict: true,
+            },
+            type: "json_schema",
+          },
+          usage: { include: true },
+        }),
+        headers: {
+          Authorization: `Bearer ${options.apiKey}`,
+          "Content-Type": "application/json",
+          ...(options.referer ? { "HTTP-Referer": options.referer } : {}),
+          ...(options.title ? { "X-Title": options.title } : {}),
+        },
+        method: "POST",
+      }
+    );
+
+    if (!response.ok) {
+      const body = await response.text();
+      const error = new Error(
+        `OpenRouter request failed (${response.status}): ${body.slice(0, 500)}`
+      );
+
+      if (TRANSIENT_STATUS.has(response.status)) {
+        (error as Error & { transient?: boolean }).transient = true;
+      }
+
+      throw error;
+    }
+
+    const data = (await response.json()) as OpenRouterResponse;
+
+    if (data.error?.message) {
+      throw new Error(`OpenRouter error: ${data.error.message}`);
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+
+    if (!content) {
+      throw new Error("OpenRouter returned an empty completion");
+    }
+
+    return { content, usage: readUsage(data.usage, model) };
+  };
+
   return {
     review: async (
       request: FrontierModelRequest
     ): Promise<FrontierModelResponse> => {
       let lastError: unknown;
+      // A 200 with an unusable payload is still billed, so retries accumulate
+      // into one reconciled cost rather than silently under-reporting spend.
+      let spentUsd = 0;
+      let totalInput = 0;
+      let totalOutput = 0;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          const response = await doFetch(
-            "https://openrouter.ai/api/v1/chat/completions",
-            {
-              body: JSON.stringify({
-                max_tokens: request.maxTokens,
-                messages: [
-                  { content: request.system, role: "system" },
-                  { content: request.user, role: "user" },
-                ],
-                model,
-                provider: { require_parameters: true },
-                reasoning: {
-                  effort: FRONTIER_REASONING_EFFORT,
-                  exclude: true,
-                },
-                response_format: {
-                  json_schema: {
-                    name: "frontier_review",
-                    schema: reviewJsonSchema(),
-                    strict: true,
-                  },
-                  type: "json_schema",
-                },
-                usage: { include: true },
-              }),
-              headers: {
-                Authorization: `Bearer ${options.apiKey}`,
-                "Content-Type": "application/json",
-                ...(options.referer ? { "HTTP-Referer": options.referer } : {}),
-                ...(options.title ? { "X-Title": options.title } : {}),
-              },
-              method: "POST",
-            }
-          );
+          const { content, usage } = await attemptOnce(request);
+          spentUsd += usage.costUsd;
+          totalInput += usage.inputTokens;
+          totalOutput += usage.outputTokens;
 
-          if (!response.ok) {
-            const body = await response.text();
-            const error = new Error(
-              `OpenRouter request failed (${response.status}): ${body.slice(0, 500)}`
-            );
-
-            if (
-              TRANSIENT_STATUS.has(response.status) &&
-              attempt < maxAttempts
-            ) {
-              lastError = error;
-              continue;
-            }
-
-            throw error;
-          }
-
-          const data = (await response.json()) as OpenRouterResponse;
-
-          if (data.error?.message) {
-            throw new Error(`OpenRouter error: ${data.error.message}`);
-          }
-
-          const content = data.choices?.[0]?.message?.content;
-
-          if (!content) {
-            throw new Error("OpenRouter returned an empty completion");
-          }
+          const review = parseFrontierResponse(extractJson(content));
 
           return {
-            review: parseFrontierResponse(extractJson(content)),
-            usage: readUsage(data.usage, model),
+            review,
+            usage: {
+              costUsd: spentUsd,
+              inputTokens: totalInput,
+              model,
+              outputTokens: totalOutput,
+            },
           };
         } catch (error) {
           lastError = error;
 
-          // Network/timeout errors are the only other retryable class.
-          const isAbort = error instanceof Error && error.name === "AbortError";
-          if (attempt < maxAttempts && isAbort) {
+          // Retryable: an abort, a transient HTTP status, or a payload that
+          // failed to parse against the review schema.
+          const retryable =
+            (error instanceof Error && error.name === "AbortError") ||
+            (error as { transient?: boolean }).transient === true ||
+            isPayloadError(error);
+
+          if (attempt < maxAttempts && retryable) {
             continue;
+          }
+
+          if (spentUsd > 0) {
+            throw new FrontierModelError(
+              error instanceof Error ? error.message : String(error),
+              { inputTokens: totalInput, outputTokens: totalOutput, spentUsd }
+            );
           }
 
           throw error;

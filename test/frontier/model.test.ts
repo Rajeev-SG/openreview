@@ -2,12 +2,15 @@ import { describe, expect, test } from "bun:test";
 
 import {
   createOpenRouterFrontierModel,
+  FrontierModelError,
   parseFrontierResponse,
   reviewJsonSchema,
 } from "@/lib/frontier/model";
 
 import {
+  alwaysBadPayloadFetch,
   alwaysFailingFetch,
+  badPayloadThenValidFetch,
   captureFetch,
   transientThenSuccessFetch,
 } from "./model-harness";
@@ -130,6 +133,44 @@ describe("createOpenRouterFrontierModel", () => {
     await client.review({ maxTokens: 10, system: "s", user: "u" });
 
     expect(stub.attempts()).toBe(2);
+  });
+
+  test("retries a schema-invalid payload and reports the summed cost", async () => {
+    const stub = badPayloadThenValidFetch();
+    const client = createOpenRouterFrontierModel({
+      apiKey: "k",
+      fetchImpl: stub.fetchImpl,
+    });
+
+    const result = await client.review({
+      maxTokens: 10,
+      system: "s",
+      user: "u",
+    });
+
+    expect(stub.attempts()).toBe(2);
+    // Both attempts were billed, so the reported cost covers both.
+    expect(result.usage.costUsd).toBeCloseTo(0.008, 6);
+    expect(result.usage.inputTokens).toBe(2000);
+  });
+
+  test("surfaces the billed spend when every attempt is unusable", async () => {
+    const stub = alwaysBadPayloadFetch();
+    const client = createOpenRouterFrontierModel({
+      apiKey: "k",
+      fetchImpl: stub.fetchImpl,
+    });
+
+    let caught: unknown = null;
+
+    try {
+      await client.review({ maxTokens: 10, system: "s", user: "u" });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(FrontierModelError);
+    expect((caught as FrontierModelError).spentUsd).toBeCloseTo(0.008, 6);
   });
 
   test("does not retry a non-transient client error", async () => {

@@ -12,7 +12,10 @@ import type {
   FrontierCheckUpdate,
   FrontierGitHub,
 } from "@/lib/frontier/github";
-import { FRONTIER_SYSTEM_PROMPT } from "@/lib/frontier/model";
+import {
+  FRONTIER_SYSTEM_PROMPT,
+  FrontierModelError,
+} from "@/lib/frontier/model";
 import type { FrontierModelClient } from "@/lib/frontier/model";
 import { buildPacket, renderFindingsMarkdown } from "@/lib/frontier/packet";
 import type { PacketContextFile } from "@/lib/frontier/packet";
@@ -517,6 +520,17 @@ const runFirstReview = async (
       user: packet.text,
     });
   } catch (error) {
+    // Reconcile against what was actually billed; if the model reported no
+    // cost, keep the reservation (conservative).
+    await reconcileBudget(
+      deps.kv,
+      now,
+      budget.reservationId,
+      error instanceof FrontierModelError
+        ? error.spentUsd
+        : reservationFor(deps)
+    );
+
     state.lifecycle = "needs_manual_review";
     await setCheck(deps, state, {
       conclusion: "action_required",
@@ -770,6 +784,15 @@ const attemptFinalReview = async (
       user: packet.text,
     });
   } catch (error) {
+    await reconcileBudget(
+      deps.kv,
+      now,
+      budget.reservationId,
+      error instanceof FrontierModelError
+        ? error.spentUsd
+        : reservationFor(deps)
+    );
+
     state.lifecycle = "needs_manual_review";
     await setCheck(deps, state, {
       conclusion: "action_required",
