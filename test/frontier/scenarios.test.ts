@@ -4,6 +4,7 @@ import { dayKey, readSpend } from "@/lib/frontier/budget";
 import { handleFrontierEvent } from "@/lib/frontier/engine";
 import type { FrontierOutcome } from "@/lib/frontier/engine";
 import { createMemoryKv } from "@/lib/frontier/store";
+import type { FrontierKv } from "@/lib/frontier/store";
 import { FINAL_SIGNAL_LABEL, NEW_CYCLE_LABEL } from "@/lib/frontier/types";
 import type { FrontierReview } from "@/lib/frontier/types";
 
@@ -430,7 +431,23 @@ describe("budget reservation", () => {
 describe("durable state requirement", () => {
   test("fails closed with zero spend when the store is ephemeral", async () => {
     const harness = createHarness({ reviews: [clean] });
-    const deps = { ...harness.deps, isDurableState: false };
+    // A store that throws on every access, to prove the guard runs first.
+    const exploding: FrontierKv = {
+      delete: () => {
+        throw new Error("kv must not be touched");
+      },
+      get: () => {
+        throw new Error("kv must not be touched");
+      },
+      set: () => {
+        throw new Error("kv must not be touched");
+      },
+    };
+    const deps = {
+      ...harness.deps,
+      isDurableState: false,
+      kv: exploding,
+    };
 
     const outcome = await handleFrontierEvent(deps, pullRequestEvent());
 

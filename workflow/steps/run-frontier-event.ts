@@ -12,7 +12,8 @@ export const runFrontierEvent = async (
 ): Promise<FrontierOutcome> => {
   "use step";
 
-  const outcome = await handleFrontierEvent(createFrontierDeps(), event);
+  const deps = await createFrontierDeps();
+  const outcome = await handleFrontierEvent(deps, event);
 
   return outcome;
 };
