@@ -21,6 +21,7 @@ import { buildPacket, renderFindingsMarkdown } from "@/lib/frontier/packet";
 import type { PacketContextFile } from "@/lib/frontier/packet";
 import {
   createInitialState,
+  DELIVERY_TTL_MS,
   deliveryKey,
   IDEMPOTENCY_TTL_MS,
   idempotencyKey,
@@ -1067,11 +1068,6 @@ export const handleFrontierEvent = async (
         status: "duplicate",
       };
     }
-    await deps.kv.set(
-      deliveryKey(event.deliveryId),
-      1,
-      14 * 24 * 60 * 60 * 1000
-    );
   }
 
   const lockKey = `frontier:lock:${event.repo}#${event.prNumber}`;
@@ -1115,6 +1111,13 @@ export const handleFrontierEvent = async (
         : await evaluate(deps, state, {}, now);
 
     await savePrState(deps.kv, state, now);
+
+    // Record the delivery only after the work completed. Writing it up front
+    // would make a Workflow retry (e.g. a transient GitHub error after the
+    // dedup write) short-circuit as a "duplicate" and never finish the event.
+    if (event.deliveryId) {
+      await deps.kv.set(deliveryKey(event.deliveryId), 1, DELIVERY_TTL_MS);
+    }
 
     emit(deps, "frontier.outcome", {
       calls: outcome.calls,
