@@ -1,0 +1,18 @@
+# Optional per-repo configuration for the automatic frontier quality gate.
+#
+# The gate is deterministic and observable-signals-only. Every key is optional;
+# omitting this file entirely uses these same defaults with an empty rule set.
+frontier:
+  enabled: true
+  threshold: 5
+
+  # Always spend frontier tokens on these paths, whatever the score says.
+  always_review:
+    - "lib/frontier/**"
+    - "workflow/frontier.ts"
+
+  # Never review purely mechanical output, even when other signals match.
+  never_review:
+    - "dist/**"
+    - "generated/**"
+    - ".next/**"

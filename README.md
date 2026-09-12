@@ -9,6 +9,7 @@ An open-source, self-hosted AI code review bot. Deploy to Vercel, connect a GitH
 ## Features
 
 - **On-demand reviews** — Mention `@openreview` in any PR comment to trigger a review. Powered by [Chat SDK](https://chat-sdk.dev)
+- **Automatic frontier quality gate** — An optional bounded, deterministic-quality gate that judges agent-written PRs with at most two frontier-model calls per review cycle
 - **Sandboxed execution** — Runs in an isolated [Vercel Sandbox](https://vercel.com/docs/sandbox) with full repo access, including the ability to run linters, formatters, and tests
 - **Inline suggestions** — Posts line-level comments with GitHub suggestion blocks for one-click fixes
 - **Code changes** — Can directly fix formatting, lint errors, and simple bugs, then commit and push to your PR branch
@@ -78,6 +79,7 @@ Create a new [GitHub App](https://github.com/settings/apps/new) with the followi
 
 **Repository permissions**:
 
+- Checks: Read & write (automatic frontier quality gate)
 - Contents: Read & write
 - Issues: Read & write
 - Pull requests: Read & write
@@ -85,7 +87,9 @@ Create a new [GitHub App](https://github.com/settings/apps/new) with the followi
 
 **Subscribe to events**:
 
+- Check run
 - Issue comment
+- Pull request
 - Pull request review comment
 
 Generate a private key and webhook secret, then note your App ID and Installation ID.
@@ -94,16 +98,21 @@ Generate a private key and webhook secret, then note your App ID and Installatio
 
 Add the following environment variables to your Vercel project:
 
-| Variable                     | Description                                                                                  |
-| ---------------------------- | -------------------------------------------------------------------------------------------- |
-| `OPENREVIEW_MODEL`           | Model ID to use for reviews. Defaults to `anthropic/claude-sonnet-4.6`                       |
-| `OPENROUTER_API_KEY`         | OpenRouter API key. If set, OpenReview uses OpenRouter for the configured `OPENREVIEW_MODEL` |
-| `ANTHROPIC_API_KEY`          | Anthropic API key used as a fallback when `OPENROUTER_API_KEY` is not set                    |
-| `GITHUB_APP_ID`              | The ID of your GitHub App                                                                    |
-| `GITHUB_APP_INSTALLATION_ID` | The installation ID for your repository                                                      |
-| `GITHUB_APP_PRIVATE_KEY`     | The private key generated for your GitHub App (with `\n` for newlines)                       |
-| `GITHUB_APP_WEBHOOK_SECRET`  | The webhook secret you configured                                                            |
-| `REDIS_URL`                  | (Optional) Redis URL for persistent state, falls back to in-memory                           |
+| Variable                      | Description                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `OPENREVIEW_MODEL`            | Model ID to use for reviews. Defaults to `anthropic/claude-sonnet-4.6`                       |
+| `OPENROUTER_API_KEY`          | OpenRouter API key. If set, OpenReview uses OpenRouter for the configured `OPENREVIEW_MODEL` |
+| `ANTHROPIC_API_KEY`           | Anthropic API key used as a fallback when `OPENROUTER_API_KEY` is not set                    |
+| `GITHUB_APP_ID`               | The ID of your GitHub App                                                                    |
+| `GITHUB_APP_INSTALLATION_ID`  | The installation ID for your repository                                                      |
+| `GITHUB_APP_PRIVATE_KEY`      | The private key generated for your GitHub App (with `\n` for newlines)                       |
+| `GITHUB_APP_WEBHOOK_SECRET`   | The webhook secret you configured                                                            |
+| `REDIS_URL`                   | (Optional) Redis URL for persistent state, falls back to in-memory                           |
+| `FRONTIER_ENABLED`            | (Optional) Set to `false` to disable the automatic frontier quality gate. Default `true`     |
+| `FRONTIER_MODEL`              | (Optional) Frontier judge model. Default `openai/gpt-6-astra`                                |
+| `FRONTIER_DAILY_BUDGET_USD`   | (Optional) Daily frontier spend ceiling. Default `5`                                         |
+| `FRONTIER_MONTHLY_BUDGET_USD` | (Optional) Monthly frontier spend ceiling. Default `50`                                      |
+| `FRONTIER_REQUIRED_CHECKS`    | (Optional) Comma-separated required checks, used instead of branch protection                |
 
 Recommended Vercel setup:
 
@@ -128,6 +137,34 @@ Fallback behavior:
 ### 4. Install the GitHub App
 
 Install the GitHub App on the repositories you want OpenReview to monitor. Once installed, mention `@openreview` in any PR comment to trigger a review.
+
+## Automatic frontier quality gate
+
+Separate from the manual agent, the frontier quality gate automatically judges
+agent-written pull requests and reports a single stable `frontier-quality`
+check. It waits for your configured required CI before spending anything, skips
+low-value PRs (docs, assets, lockfiles) for free, and is bounded to **two
+frontier calls per review cycle**:
+
+1. PR opened/updated → required CI green → one frontier review
+2. Findings are surfaced on the check and as a PR comment; the originating agent
+   fixes and pushes (any number of repair pushes costs $0)
+3. Add the `frontier-ready-final` label → one delta-only review → PASS or BLOCK
+4. After a BLOCK, only the explicit `frontier-new-cycle` label can spend again
+
+Configure it per repository with `.github/frontier-review.yml`:
+
+```yaml
+frontier:
+  enabled: true
+  threshold: 5
+  always_review: ["src/agents/**", "benchmarks/**"]
+  never_review: ["generated/**"]
+```
+
+Set `FRONTIER_DAILY_BUDGET_USD` and `FRONTIER_MONTHLY_BUDGET_USD` to bound
+spend. Full design, signals, caps, labels and acceptance tests:
+[docs/frontier-quality-gate.md](docs/frontier-quality-gate.md).
 
 ## Usage
 
