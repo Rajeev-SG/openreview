@@ -45,14 +45,38 @@ describe("planGitHubWebhook — automatic frontier path", () => {
     }
   });
 
-  test("routes required-check completion to the frontier engine", () => {
+  test("routes required-check completion using the REAL check_run payload shape", () => {
+    // GitHub carries the PR in check_run.pull_requests[], not at the top level.
     const result = plan("check_run", {
       action: "completed",
-      check_run: { conclusion: "success", name: "ci", status: "completed" },
-      pull_request: { number: 7 },
+      check_run: {
+        conclusion: "success",
+        name: "ci",
+        pull_requests: [{ head: { sha: "head1" }, number: 7 }],
+        status: "completed",
+      },
       repository: { full_name: "acme/widgets" },
     });
-    expect(result.kind).toBe("frontier");
+
+    expect(result).toMatchObject({
+      event: { headSha: "head1", kind: "check_run", prNumber: 7 },
+      kind: "frontier",
+    });
+  });
+
+  test("a check_run with no associated pull request is not a frontier event", () => {
+    const result = plan("check_run", {
+      action: "completed",
+      check_run: {
+        conclusion: "success",
+        name: "ci",
+        pull_requests: [],
+        status: "completed",
+      },
+      repository: { full_name: "acme/widgets" },
+    });
+
+    expect(result.kind).toBe("chat");
   });
 
   test("ignores draft pull requests", () => {

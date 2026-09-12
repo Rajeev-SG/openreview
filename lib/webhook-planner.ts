@@ -53,7 +53,13 @@ export const verifySignature = (input: {
 
 interface MinimalPayload {
   action?: string;
-  check_run?: { conclusion?: string | null; name?: string; status?: string };
+  check_run?: {
+    conclusion?: string | null;
+    name?: string;
+    // Real check_run payloads carry the PR here, NOT at the top level.
+    pull_requests?: { head?: { sha?: string }; number?: number }[];
+    status?: string;
+  };
   installation?: { id?: number };
   label?: { name?: string };
   pull_request?: { draft?: boolean; head?: { sha?: string }; number?: number };
@@ -67,13 +73,18 @@ const buildEvent = (
   deliveryId: string | undefined
 ): FrontierEvent | null => {
   const repo = payload.repository?.full_name;
-  const prNumber = payload.pull_request?.number;
+  // `pull_request` events nest the PR at the top level; `check_run` events carry
+  // it in `check_run.pull_requests[]`. Reading only the former silently drops
+  // every CI-completion event, so the gate could never resume from "waiting for
+  // required CI".
+  const checkRunPr = payload.check_run?.pull_requests?.[0];
+  const prNumber = payload.pull_request?.number ?? checkRunPr?.number;
 
   if (!repo || !prNumber) {
     return null;
   }
 
-  const headSha = payload.pull_request?.head?.sha;
+  const headSha = payload.pull_request?.head?.sha ?? checkRunPr?.head?.sha;
 
   return {
     action,
