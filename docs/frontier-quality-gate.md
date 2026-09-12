@@ -268,6 +268,14 @@ The automatic path needs, in addition to the existing manual-path permissions:
 - Subscribed events: **Pull request**, **Check run** (plus the existing
   issue-comment and review-comment events)
 
+Granting these is a **two-step** process: the App change raises a permission
+review request, and the installation keeps its old permissions until that
+request is accepted (until then, check-run creation returns `403`).
+
+Deployment, the complete environment-variable list, the invocation handle and
+the operational traps are in
+[`frontier-quality-gate-operations.md`](./frontier-quality-gate-operations.md).
+
 ## 11. Tests
 
 `bun test` covers the deterministic gate, packet caps and redaction, budget
