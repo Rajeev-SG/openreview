@@ -1,13 +1,12 @@
 import "server-only";
 import type { GitHubRawMessage } from "@chat-adapter/github";
 import { createGitHubAdapter } from "@chat-adapter/github";
-import { createMemoryState } from "@chat-adapter/state-memory";
-import { createRedisState } from "@chat-adapter/state-redis";
 import { Chat, emoji } from "chat";
 import type { Message, Thread } from "chat";
 import { start } from "workflow/api";
 
 import { env } from "@/lib/env";
+import { stateAdapter } from "@/lib/state";
 import { botWorkflow } from "@/workflow";
 import type { ThreadMessage, WorkflowParams } from "@/workflow";
 
@@ -34,10 +33,6 @@ interface ThreadState {
   prNumber: number;
   repoFullName: string;
 }
-
-const state = env.REDIS_URL
-  ? createRedisState({ url: env.REDIS_URL })
-  : createMemoryState();
 
 let botInstance: Chat | null = null;
 
@@ -106,7 +101,7 @@ const initBot = async (): Promise<Chat> => {
       }),
     },
     logger: "debug",
-    state,
+    state: stateAdapter,
     userName: appInfo.slug,
   });
 
