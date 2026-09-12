@@ -1,13 +1,17 @@
 import "server-only";
 import type { Octokit } from "octokit";
 
-import { withoutSelfCheck } from "@/lib/frontier/checks";
+import {
+  classifyRequiredChecksFailure,
+  withoutSelfCheck,
+} from "@/lib/frontier/checks";
 import type { GateChangedFile } from "@/lib/frontier/gate";
 import type {
   CheckRunView,
   FrontierGitHub,
   LinkedIssue,
   PullRequestView,
+  RequiredChecksResult,
 } from "@/lib/frontier/github";
 import { FRONTIER_CHECK_NAME } from "@/lib/frontier/types";
 import { getInstallationOctokit } from "@/lib/github";
@@ -229,10 +233,12 @@ export const createOctokitFrontierGitHub = (
     getRequiredChecks: async (
       repo: string,
       baseBranch: string
-    ): Promise<string[]> => {
+    ): Promise<RequiredChecksResult> => {
+      // An explicit override wins over branch protection, so a repository the
+      // App cannot read can still be gated by configuration.
       const override = requiredChecksOverride();
       if (override.length > 0) {
-        return withoutSelfCheck(override);
+        return { known: true, names: withoutSelfCheck(override) };
       }
 
       const { owner, repo: name } = split(repo);
@@ -247,27 +253,29 @@ export const createOctokitFrontierGitHub = (
         const contexts = data.contexts ?? [];
         const checks = (data.checks ?? []).map((check) => check.context);
 
-        return withoutSelfCheck([...contexts, ...checks]);
+        return {
+          known: true,
+          names: withoutSelfCheck([...contexts, ...checks]),
+        };
       } catch (error) {
         const { status } = error as { status?: number };
+        const kind = classifyRequiredChecksFailure(status);
 
-        // 404 means the branch genuinely has no protection: nothing to wait for.
-        if (status === 404) {
-          return [];
+        // 404: the branch genuinely has no protection, so there is nothing to wait for.
+        if (kind === "none") {
+          return { known: true, names: [] };
         }
 
-        // 403 means the App cannot *read* protection (it lacks repository
-        // `administration`). Returning [] silently would disable the
-        // wait-for-required-CI guarantee without anyone noticing, so say so
-        // loudly and let the operator set FRONTIER_REQUIRED_CHECKS.
-        if (status === 403) {
-          console.warn(
-            `[frontier] cannot read branch protection for ${repo}#${baseBranch}: ` +
-              "the GitHub App lacks repository 'administration' permission. " +
-              "Required CI will NOT gate the review. Grant 'administration: read' " +
-              "on the App, or set FRONTIER_REQUIRED_CHECKS."
-          );
-          return [];
+        // 403: the App cannot read protection. This must NOT masquerade as
+        // "no required checks" - the caller would spend frontier tokens without
+        // being able to verify CI. Report it as unknown and let the gate fail closed.
+        if (kind === "unreadable") {
+          return {
+            known: false,
+            reason:
+              "the GitHub App cannot read branch protection (it needs repository " +
+              "'administration' permission), or set FRONTIER_REQUIRED_CHECKS",
+          };
         }
 
         throw error;

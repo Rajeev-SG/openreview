@@ -485,3 +485,27 @@ describe("durable state requirement", () => {
     );
   });
 });
+
+describe("required CI cannot be read", () => {
+  test("fails closed with zero spend rather than reviewing ungated", async () => {
+    const harness = createHarness({
+      repo: {
+        requiredUnknown:
+          "the GitHub App cannot read branch protection (it needs repository 'administration' permission)",
+      },
+      reviews: [clean],
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("needs_manual_review");
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(0);
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe(
+      "action_required"
+    );
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.summary).toContain(
+      "administration"
+    );
+  });
+});

@@ -181,6 +181,8 @@ interface CiStatus {
   ok: boolean;
   pending: string[];
   required: string[];
+  /** Set when required CI cannot be determined; the caller must not spend. */
+  unknown?: string;
 }
 
 const resolveCi = async (
@@ -189,7 +191,22 @@ const resolveCi = async (
   baseBranch: string,
   ref: string
 ): Promise<CiStatus> => {
-  const required = await deps.github.getRequiredChecks(repo, baseBranch, ref);
+  const resolved = await deps.github.getRequiredChecks(repo, baseBranch, ref);
+
+  // Fail closed: without a trustworthy view of required CI the gate cannot
+  // honour its "wait for required CI before spending" guarantee.
+  if (!resolved.known) {
+    return {
+      evidence: [],
+      failed: [],
+      ok: false,
+      pending: [],
+      required: [],
+      unknown: resolved.reason,
+    };
+  }
+
+  const required = resolved.names;
   const runs = await deps.github.listCheckRuns(repo, ref);
 
   const requiredRuns = runs.filter((run) => required.includes(run.name));
@@ -380,6 +397,24 @@ const runFirstReview = async (
   }
 
   const ci = await resolveCi(deps, state.repo, pr.baseBranch, pr.headSha);
+
+  if (ci.unknown) {
+    state.lifecycle = "needs_manual_review";
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier review skipped: required CI could not be determined (${ci.unknown}). No frontier tokens were spent.`,
+      title: "Frontier review needs CI configuration",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `required CI unknown: ${ci.unknown}`,
+      reviewCount: state.reviewCount,
+      status: "needs_manual_review",
+    };
+  }
 
   if (!ci.ok) {
     if (ci.failed.length > 0) {
@@ -653,6 +688,24 @@ const attemptFinalReview = async (
   }
 
   const ci = await resolveCi(deps, state.repo, pr.baseBranch, pr.headSha);
+
+  if (ci.unknown) {
+    state.lifecycle = "needs_manual_review";
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier review skipped: required CI could not be determined (${ci.unknown}). No frontier tokens were spent.`,
+      title: "Frontier review needs CI configuration",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `required CI unknown: ${ci.unknown}`,
+      reviewCount: state.reviewCount,
+      status: "needs_manual_review",
+    };
+  }
 
   if (!ci.ok) {
     if (ci.failed.length > 0) {

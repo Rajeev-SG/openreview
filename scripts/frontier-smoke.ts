@@ -179,7 +179,7 @@ const createLiveGitHub = (
     },
     getRequiredChecks: async () => {
       await settle();
-      return ["verify"];
+      return { known: true, names: ["verify"] };
     },
     listCheckRuns: async (): Promise<CheckRunView[]> => {
       await settle();

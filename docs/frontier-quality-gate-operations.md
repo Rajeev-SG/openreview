@@ -81,15 +81,14 @@ An App without it gets `403 Resource not accessible by integration`, and if that
 is treated as "no required checks" the gate reviews immediately instead of
 waiting for CI — the wait-for-required-CI guarantee silently stops working.
 
-The gate now logs this loudly rather than swallowing it:
-
-```
-[frontier] cannot read branch protection for owner/repo#main: the GitHub App
-lacks repository 'administration' permission. Required CI will NOT gate the review.
-```
+The gate **fails closed**: an unreadable required-check list is reported as
+_unknown_, not as "no required checks". It writes an `action_required` check
+explaining that CI could not be determined, and spends **$0** rather than
+reviewing without being able to honour the wait-for-CI guarantee.
 
 Either grant **Administration: Read-only** (and accept the installation update),
-or set `FRONTIER_REQUIRED_CHECKS`. Verify with an installation token:
+or set `FRONTIER_REQUIRED_CHECKS` — which takes precedence over branch
+protection when set. Verify with an installation token:
 
 ```bash
 # should be 200, not 403
@@ -97,6 +96,14 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer <installation-token>" \
   https://api.github.com/repos/<owner>/<repo>/branches/main/protection/required_status_checks
 ```
+
+### Precedence of FRONTIER_REQUIRED_CHECKS
+
+When set, `FRONTIER_REQUIRED_CHECKS` **replaces** branch protection entirely for
+that deployment (branch protection is not consulted), and the gate's own check
+is stripped out of it. Use it for repositories the App cannot read, or to pin an
+explicit list. A name listed there that never reports will hang the gate at
+"waiting for required CI" indefinitely, so list only checks that actually run.
 
 ### Trap: the gate must never be its own required check
 
