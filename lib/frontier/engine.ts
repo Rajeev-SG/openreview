@@ -20,6 +20,11 @@ import type { FrontierModelClient } from "@/lib/frontier/model";
 import { buildPacket, renderFindingsMarkdown } from "@/lib/frontier/packet";
 import type { PacketContextFile } from "@/lib/frontier/packet";
 import {
+  buildResolutionReport,
+  parseChangedPaths,
+  renderResolutionMarkdown,
+} from "@/lib/frontier/resolution";
+import {
   createInitialState,
   DELIVERY_TTL_MS,
   deliveryKey,
@@ -41,6 +46,7 @@ import type {
   FrontierLimits,
   FrontierPrState,
   FrontierReview,
+  ResolutionReport,
 } from "@/lib/frontier/types";
 
 export interface FrontierEngineDeps {
@@ -109,7 +115,7 @@ const FAILING_CONCLUSIONS = new Set([
   "timed_out",
 ]);
 
-const TERMINAL_LIFECYCLES = new Set(["passed", "blocked"]);
+const TERMINAL_LIFECYCLES = new Set(["passed", "blocked", "resolved"]);
 
 /**
  * How long the gate may sit at "waiting for required CI" before it gives up and
@@ -957,7 +963,13 @@ const attemptFinalReview = async (
       "",
       "---",
       "",
-      `This cycle is complete. Further pushes will not trigger another paid review. To start a new bounded cycle after remediation, add the \`${NEW_CYCLE_LABEL}\` label.`,
+      `This cycle is complete: further pushes will not trigger another paid review.`,
+      "",
+      "Push a repair that changes each flagged file. The gate then re-checks those files and the",
+      "required CI **for free** (no model call); if every blocking finding's file changed and CI is",
+      "green, the check clears and the PR can merge. Findings the gate cannot verify that way stay",
+      "blocked - fix them by hand, or start a new bounded cycle with the",
+      `\`${NEW_CYCLE_LABEL}\` label.`,
     ].join("\n")
   );
 
@@ -970,6 +982,127 @@ const attemptFinalReview = async (
   };
 };
 
+/**
+ * Free, deterministic resolution pass after a BLOCK.
+ *
+ * The cycle's two paid reviews are spent, so a repair push cannot buy another
+ * opinion. Rather than leaving a required check red forever, verify the repair
+ * deterministically: every blocking finding must name a file, that file must
+ * have changed since the blocked review, and required CI must be green. This
+ * spends nothing.
+ *
+ * It proves the flagged file changed and CI passed - not that the repair is
+ * semantically right (that was review #2's job). A finding that names no file
+ * cannot be verified this way and stays unresolved, so the PR stays blocked
+ * until a human or a new cycle resolves it.
+ *
+ * Writes the check only when the map changes, because every write produces a
+ * `check_run` event that re-enters this function.
+ */
+const attemptResolution = async (
+  deps: FrontierEngineDeps,
+  state: FrontierPrState
+): Promise<FrontierOutcome> => {
+  const fromSha = state.finalReviewSha ?? "";
+  const pr = await deps.github.getPullRequest(state.repo, state.prNumber);
+  const ci = await resolveCi(deps, state.repo, pr.baseBranch, state.headSha);
+  const diff = await deps.github.getDeltaDiff(
+    state.repo,
+    fromSha,
+    state.headSha
+  );
+
+  const report: ResolutionReport = buildResolutionReport({
+    changedPaths: parseChangedPaths(diff),
+    findings: blockingFindings(state.findings ?? []),
+    requiredCiGreen: ci.unknown ? false : ci.ok,
+  });
+
+  const unchanged =
+    state.resolutionSha === state.headSha &&
+    JSON.stringify(state.resolution) === JSON.stringify(report);
+
+  state.resolution = report;
+  state.resolutionSha = state.headSha;
+
+  emit(deps, "frontier.resolution", {
+    addressed: report.entries.length - report.unresolved.length,
+    prNumber: state.prNumber,
+    repo: state.repo,
+    resolved: report.resolved,
+    unresolved: report.unresolved.length,
+  });
+
+  if (report.resolved) {
+    state.lifecycle = "resolved";
+
+    if (!unchanged) {
+      await setCheck(deps, state, {
+        conclusion: "success",
+        details: `${renderResolutionMarkdown(report)}${findingsJson(
+          state.findings ?? []
+        )}`,
+        status: "completed",
+        summary:
+          `Blocking findings resolved without a frontier call: ` +
+          `${report.entries.length} finding(s) show a changed file and green required CI. ` +
+          "This is a deterministic check, not a re-review.",
+        title: "Frontier findings resolved (no re-review)",
+      });
+      await deps.github.postComment(
+        state.repo,
+        state.prNumber,
+        [
+          "## Frontier: blocking findings resolved (no frontier call)",
+          "",
+          renderResolutionMarkdown(report),
+          "",
+          "Each blocking finding's file changed since the blocked review and required CI is green.",
+          "The paid review budget for this cycle stays spent; no new opinion was bought.",
+          "",
+          "This is a deterministic resolution check, not a semantic re-review. If any finding",
+          "needed judgement rather than a testable fix, re-open it deliberately with",
+          "`frontier-new-cycle` or fix it by hand.",
+        ].join("\n")
+      );
+    }
+
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: "blocking findings resolved deterministically",
+      reviewCount: state.reviewCount,
+      status: "resolved",
+    };
+  }
+
+  state.lifecycle = "blocked";
+
+  if (!unchanged) {
+    await setCheck(deps, state, {
+      conclusion: "failure",
+      details: renderResolutionMarkdown(report),
+      status: "completed",
+      summary:
+        `Blocked: ${report.unresolved.length} of ${report.entries.length} finding(s) not yet ` +
+        `deterministically resolved${
+          ci.unknown ? ` (${ci.unknown})` : ""
+        }. Push a repair that changes each flagged file; required CI must be green.`,
+      title: "Frontier final review blocked",
+    });
+  }
+
+  return {
+    calls: 0,
+    costUsd: 0,
+    cycleId: state.cycleId,
+    detail: "resolution incomplete",
+    reviewCount: state.reviewCount,
+    status: "blocked",
+  };
+};
+
 const evaluate = (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
@@ -977,6 +1110,17 @@ const evaluate = (
   now: Date
 ): Promise<FrontierOutcome> => {
   if (state.reviewCount >= deps.limits.maxReviewsPerCycle) {
+    // A blocked cycle that received a repair push gets the free deterministic
+    // resolution pass instead of a dead end. A *passed* cycle is left alone -
+    // its findings list is empty, so there is nothing to resolve.
+    if (
+      (state.lifecycle === "blocked" || state.lifecycle === "resolved") &&
+      state.finalReviewSha &&
+      state.headSha !== state.finalReviewSha
+    ) {
+      return attemptResolution(deps, state);
+    }
+
     emit(deps, "frontier.cycle_complete", {
       cycleId: state.cycleId,
       lifecycle: state.lifecycle,

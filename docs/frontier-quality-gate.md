@@ -14,6 +14,7 @@ PR
 → explicit `frontier-ready-final` label
 → delta-only frontier review #2
 → PASS or BLOCK
+→ after BLOCK: repair push, then free deterministic resolution (0 model calls)
 ```
 
 **Hard invariant: at most two paid frontier calls per review cycle.** No code
@@ -165,7 +166,7 @@ type FrontierFinding = {
 
 | `frontier-quality` conclusion | Meaning                                                    |
 | ----------------------------- | ---------------------------------------------------------- |
-| success                       | skipped (low value), or a review passed                    |
+| success                       | skipped (low value), a review passed, or a BLOCK later resolved for free |
 | action_required               | findings to fix, budget exhausted, or manual review needed |
 | neutral                       | required CI failing; nothing was spent                     |
 | failure                       | review #2 left blocking P0/P1/P2 findings                  |
@@ -294,9 +295,49 @@ guard, response parsing, request pinning, webhook routing (including manual
 | H required CI failure       | 0 calls; resumes when CI goes green               |
 | I optional check pending    | review still proceeds                             |
 | J budget exhausted          | fails before the request, 0 calls                 |
+| K BLOCK then repair         | free resolution, 0 calls, check clears            |
+| L BLOCK then no-op repair   | stays blocked, 0 calls                            |
+
+## 12 After a BLOCK: free deterministic resolution
+
+A cycle buys at most two paid reviews, so once review #2 BLOCKs the PR cannot
+buy a third. Leaving a required check red forever would strand the work, so the
+gate verifies the **repair** deterministically instead - still with **0 model
+calls**:
+
+1. The blocked cycle records the reviewed SHA and the blocking findings.
+2. A repair push is compared against that SHA (`compare/{base}...{head}`).
+3. Every blocking finding must name a file, and that file must appear in the
+   repair delta.
+4. The repository's required CI must be green (the `frontier-quality` check
+   itself is excluded, as always).
+
+If all four hold, `frontier-quality` is written as **success** and the PR can
+merge; the gate posts the resolution map as the audit trail. Otherwise the check
+stays **failure**, and its output lists exactly which findings are unresolved
+and why.
+
+```
+| Finding | Severity | File | Status | Evidence |
+| F1 | P1 | `lib/model.ts` | addressed | `lib/model.ts` changed and required CI is green |
+| F2 | P0 | - | unresolved | no file path; not deterministically verifiable |
+```
+
+What this does and does not prove: it proves the flagged file changed and CI
+passed. It is **not** a semantic re-review - that was review #2's job. A finding
+that names no file (an architectural or judgement finding) can never be
+auto-resolved, so the PR stays blocked and the operator decides: fix it by hand
+and re-run, or buy a new cycle with `frontier-new-cycle`.
+
+The pass is idempotent: the check is rewritten only when the map changes,
+because each write produces a `check_run` event that re-enters the gate.
 
 ## Not yet covered
 
+- semantic verification of a repair after a BLOCK (resolution is deterministic:
+  file changed + CI green, not a re-review)
+- a *passed* cycle that receives a further push is not re-verified; the new SHA
+  has no `frontier-quality` run until a new cycle is started
 - automatic PASS_WITH_BACKLOG issue creation, and P2/P3 backlog deduplication
 - dashboards and ROI analytics beyond the recorded spend ledgers
 - semantic packet retrieval, and holistic "primary user journey changed"

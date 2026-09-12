@@ -153,7 +153,10 @@ frontier calls per review cycle**:
 2. Findings are surfaced on the check and as a PR comment; the originating agent
    fixes and pushes (any number of repair pushes costs $0)
 3. Add the `frontier-ready-final` label → one delta-only review → PASS or BLOCK
-4. After a BLOCK, only the explicit `frontier-new-cycle` label can spend again
+4. After a BLOCK, a repair push is re-checked **for free** (changed files +
+   green required CI, no model call); the check clears if every blocking finding
+   resolves that way
+5. Only the explicit `frontier-new-cycle` label can spend again
 
 Configure it per repository with `.github/frontier-review.yml`:
 
