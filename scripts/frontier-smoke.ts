@@ -420,7 +420,13 @@ const main = async (): Promise<void> => {
 
   const kv = createMemoryKv();
   const deps: FrontierEngineDeps = {
-    budget: { dailyUsd: 5, maxCallUsd: MAX_CALL_USD, monthlyUsd: 50 },
+    budget: {
+      dailyUsd: 5,
+      inputUsdPerMTok: 13,
+      maxCallUsd: MAX_CALL_USD,
+      monthlyUsd: 50,
+      outputUsdPerMTok: 50,
+    },
     github,
     kv,
     limits: {

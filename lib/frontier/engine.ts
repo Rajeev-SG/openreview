@@ -1,4 +1,5 @@
 import {
+  deriveReservationUsd,
   describeSpend,
   reconcileBudget,
   reserveBudget,
@@ -99,6 +100,17 @@ const FAILING_CONCLUSIONS = new Set([
 const TERMINAL_LIFECYCLES = new Set(["passed", "blocked"]);
 
 const nowOf = (deps: FrontierEngineDeps): Date => deps.now?.() ?? new Date();
+
+const reservationFor = (deps: FrontierEngineDeps): number =>
+  deriveReservationUsd(
+    {
+      inputUsdPerMTok: deps.budget.inputUsdPerMTok,
+      maxOutputTokens: deps.limits.maxOutputTokens,
+      maxPacketChars: deps.limits.maxPacketChars,
+      outputUsdPerMTok: deps.budget.outputUsdPerMTok,
+    },
+    deps.budget.maxCallUsd
+  );
 
 /**
  * Await boundary for branches that resolve without I/O. Keeps the async
@@ -463,7 +475,7 @@ const runFirstReview = async (
     deps.kv,
     now,
     deps.budget,
-    deps.budget.maxCallUsd
+    reservationFor(deps)
   );
   if (!budget.allowed) {
     state.lifecycle = "budget_exhausted";
@@ -716,7 +728,7 @@ const attemptFinalReview = async (
     deps.kv,
     now,
     deps.budget,
-    deps.budget.maxCallUsd
+    reservationFor(deps)
   );
   if (!budget.allowed) {
     state.lifecycle = "budget_exhausted";

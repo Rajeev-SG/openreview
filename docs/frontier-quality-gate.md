@@ -183,7 +183,9 @@ FRONTIER_MAX_OUTPUT_TOKENS=3000
 FRONTIER_MAX_PACKET_CHARS=50000
 FRONTIER_DAILY_BUDGET_USD=5
 FRONTIER_MONTHLY_BUDGET_USD=50
-FRONTIER_MAX_CALL_USD=0.5            (upper bound reserved per review)
+FRONTIER_MAX_CALL_USD=0.5            (floor for the per-review reservation, > 0)
+FRONTIER_INPUT_USD_PER_MTOK=13       (judge model input price)
+FRONTIER_OUTPUT_USD_PER_MTOK=50      (judge model output price)
 FRONTIER_ENABLED=true
 FRONTIER_MODEL=openai/gpt-6-astra
 FRONTIER_REQUIRED_CHECKS=            (optional override, comma separated)
@@ -195,9 +197,16 @@ and refuses the review unless the remaining allowance can cover it; after the
 call the reservation is reconciled to the real billed cost. A call whose real
 cost cannot be determined keeps its reservation (conservative).
 
+The reservation is not a magic constant: it is derived from the configured
+packet cap, the output cap and the judge model's configured price per million
+tokens (`FRONTIER_*_USD_PER_MTOK`), plus a system-prompt allowance, so it scales
+with the caps that actually determine the billable size of a request.
+`FRONTIER_MAX_CALL_USD` is a floor an operator can raise.
+
 Reservations carry an identity: the reservation record is deleted when it is
-applied, so a repeated or retried reconciliation is a no-op instead of a double
-adjustment. Every ledger mutation — reserve and reconcile — runs under a single
+claimed, before the ledger is adjusted, so an interrupted reconciliation can
+never be retried into a second adjustment — a partial failure leaves the ledger
+over-counted, never under-counted, and a repeated reconciliation is a no-op. Every ledger mutation — reserve and reconcile — runs under a single
 dedicated spend lock, because the daily and monthly keys are shared across PRs
 and the per-PR lock alone would let concurrent reviews (or reconciliations) lose
 increments and overshoot. `FRONTIER_MAX_CALL_USD` must be greater than zero, and

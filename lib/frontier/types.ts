@@ -108,8 +108,10 @@ export interface FrontierLimits {
 
 export interface FrontierBudgetLimits {
   dailyUsd: number;
+  inputUsdPerMTok: number;
   maxCallUsd: number;
   monthlyUsd: number;
+  outputUsdPerMTok: number;
 }
 
 export interface FrontierSpendEntry {

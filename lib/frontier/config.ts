@@ -27,6 +27,14 @@ const DEFAULT_MONTHLY_BUDGET_USD = 50;
  * gpt-6-astra call at the default packet and output caps.
  */
 const DEFAULT_MAX_CALL_USD = 0.5;
+/**
+ * Price of the judge model per million tokens. Used to derive the per-review
+ * reservation from the configured packet and output caps, so the reservation
+ * scales with those caps instead of being a magic constant. Defaults match
+ * openai/gpt-6-astra, rounded up.
+ */
+const DEFAULT_INPUT_USD_PER_MTOK = 13;
+const DEFAULT_OUTPUT_USD_PER_MTOK = 50;
 
 const readNumber = (
   raw: string | undefined,
@@ -115,12 +123,22 @@ export const readFrontierBudget = (
     DEFAULT_DAILY_BUDGET_USD,
     { min: 0 }
   ),
+  inputUsdPerMTok: readNumber(
+    source.FRONTIER_INPUT_USD_PER_MTOK,
+    DEFAULT_INPUT_USD_PER_MTOK,
+    { min: 0 }
+  ),
   maxCallUsd: readNumber(source.FRONTIER_MAX_CALL_USD, DEFAULT_MAX_CALL_USD, {
-    min: 0,
+    min: 0.01,
   }),
   monthlyUsd: readNumber(
     source.FRONTIER_MONTHLY_BUDGET_USD,
     DEFAULT_MONTHLY_BUDGET_USD,
+    { min: 0 }
+  ),
+  outputUsdPerMTok: readNumber(
+    source.FRONTIER_OUTPUT_USD_PER_MTOK,
+    DEFAULT_OUTPUT_USD_PER_MTOK,
     { min: 0 }
   ),
 });

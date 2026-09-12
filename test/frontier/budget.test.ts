@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   dayKey,
+  deriveReservationUsd,
   monthKey,
   readSpend,
   reconcileBudget,
@@ -11,7 +12,13 @@ import { createMemoryKv } from "@/lib/frontier/store";
 import type { FrontierKv } from "@/lib/frontier/store";
 
 const now = new Date("2026-09-12T12:00:00.000Z");
-const limits = { dailyUsd: 100, maxCallUsd: 0.5, monthlyUsd: 1000 };
+const limits = {
+  dailyUsd: 100,
+  inputUsdPerMTok: 13,
+  maxCallUsd: 0.5,
+  monthlyUsd: 1000,
+  outputUsdPerMTok: 50,
+};
 
 interface Ledger {
   calls: number;
@@ -27,6 +34,75 @@ const locklessKv = (base: FrontierKv): FrontierKv => ({
   delete: base.delete,
   get: base.get,
   set: base.set,
+});
+
+/** KV whose monthly ledger write fails, to exercise a partial reconciliation. */
+const monthFailingKv = (base: FrontierKv): FrontierKv => ({
+  ...base,
+  get: base.get,
+  set: (key, value, ttlMs) => {
+    if (key.includes("month")) {
+      throw new Error("monthly ledger unavailable");
+    }
+    return base.set(key, value, ttlMs);
+  },
+});
+
+describe("deriveReservationUsd", () => {
+  test("derives the bound from the packet and output caps", () => {
+    const derived = deriveReservationUsd(
+      {
+        inputUsdPerMTok: 13,
+        maxOutputTokens: 3000,
+        maxPacketChars: 50_000,
+        outputUsdPerMTok: 50,
+      },
+      0
+    );
+
+    // 16,667 packet tokens + 2,000 system tokens, plus the full output cap.
+    expect(derived).toBeCloseTo(
+      ((Math.ceil(50_000 / 3) + 2000) * 13 + 3000 * 50) / 1_000_000,
+      6
+    );
+  });
+
+  test("never goes below the configured floor", () => {
+    const derived = deriveReservationUsd(
+      {
+        inputUsdPerMTok: 0,
+        maxOutputTokens: 0,
+        maxPacketChars: 0,
+        outputUsdPerMTok: 0,
+      },
+      0.5
+    );
+
+    expect(derived).toBe(0.5);
+  });
+
+  test("grows with the caps", () => {
+    const small = deriveReservationUsd(
+      {
+        inputUsdPerMTok: 13,
+        maxOutputTokens: 100,
+        maxPacketChars: 1000,
+        outputUsdPerMTok: 50,
+      },
+      0
+    );
+    const large = deriveReservationUsd(
+      {
+        inputUsdPerMTok: 13,
+        maxOutputTokens: 3000,
+        maxPacketChars: 50_000,
+        outputUsdPerMTok: 50,
+      },
+      0
+    );
+
+    expect(large).toBeGreaterThan(small);
+  });
 });
 
 describe("reserveBudget", () => {
@@ -82,7 +158,7 @@ describe("reserveBudget", () => {
     const decision = await reserveBudget(
       createMemoryKv(),
       now,
-      { dailyUsd: 0, maxCallUsd: 0, monthlyUsd: 0 },
+      { ...limits, dailyUsd: 0, monthlyUsd: 0 },
       0
     );
 
@@ -150,6 +226,30 @@ describe("reconcileBudget", () => {
     expect(await readLedger(kv, dayKey(now))).toEqual({
       calls: 2,
       costUsd: 0.52,
+    });
+  });
+
+  test("a partial failure is conservative and cannot be retried into a double refund", async () => {
+    const base = createMemoryKv();
+    const reserved = await reserveBudget(base, now, limits, 0.5);
+
+    await expect(
+      reconcileBudget(monthFailingKv(base), now, reserved.reservationId, 0.02)
+    ).rejects.toThrow();
+
+    // The reservation was claimed before the delta was applied, so a retry is
+    // a no-op and the ledger can only be over-counted, never refunded twice.
+    const retry = await reconcileBudget(
+      base,
+      now,
+      reserved.reservationId,
+      0.02
+    );
+
+    expect(retry).toBe(false);
+    expect(await readLedger(base, monthKey(now))).toEqual({
+      calls: 1,
+      costUsd: 0.5,
     });
   });
 

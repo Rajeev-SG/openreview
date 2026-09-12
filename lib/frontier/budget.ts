@@ -21,6 +21,43 @@ export const monthKey = (now: Date): string =>
 export const reservationKey = (reservationId: string): string =>
   `frontier:reservation:${reservationId}`;
 
+const round6 = (value: number): number => Number(value.toFixed(6));
+
+/**
+ * Worst-case characters per token. Real prompts tokenise denser than this, so
+ * dividing by it over-estimates the input tokens.
+ */
+const CHARS_PER_TOKEN_FLOOR = 3;
+/** Headroom for the system prompt and schema, which are not in the packet. */
+const SYSTEM_PROMPT_TOKENS = 2000;
+
+export interface ReservationInput {
+  inputUsdPerMTok: number;
+  maxOutputTokens: number;
+  maxPacketChars: number;
+  outputUsdPerMTok: number;
+}
+
+/**
+ * Analytic upper bound for one review: the largest packet the caps allow, at
+ * the configured price, plus the full output cap. `maxCallUsd` remains a floor
+ * so an operator can only make the reservation more conservative.
+ */
+export const deriveReservationUsd = (
+  input: ReservationInput,
+  floorUsd: number
+): number => {
+  const inputTokens =
+    Math.ceil(input.maxPacketChars / CHARS_PER_TOKEN_FLOOR) +
+    SYSTEM_PROMPT_TOKENS;
+  const derived =
+    (inputTokens * input.inputUsdPerMTok +
+      input.maxOutputTokens * input.outputUsdPerMTok) /
+    1_000_000;
+
+  return Math.max(floorUsd, round6(derived));
+};
+
 export interface BudgetDecision {
   allowed: boolean;
   reason?: string;
@@ -31,8 +68,6 @@ interface Reservation {
   createdAt: string;
   reserveUsd: number;
 }
-
-const round6 = (value: number): number => Number(value.toFixed(6));
 
 const readLedger = async (
   kv: FrontierKv,
@@ -182,6 +217,11 @@ export const reconcileBudget = async (
       return false;
     }
 
+    // Claim the reservation before adjusting, so an interrupted reconciliation
+    // can never be retried into a second adjustment. A partial failure leaves
+    // the ledger over-counted (the reservation), never under-counted.
+    await kv.delete(key);
+
     const delta = actualUsd - reservation.reserveUsd;
 
     if (delta !== 0) {
@@ -190,8 +230,6 @@ export const reconcileBudget = async (
         await writeLedger(kv, ledgerKey, adjust(ledger, delta, 0));
       }
     }
-
-    await kv.delete(key);
 
     return true;
   });

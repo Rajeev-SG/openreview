@@ -221,8 +221,10 @@ export const createHarness = (input?: {
     deps: {
       budget: input?.budget ?? {
         dailyUsd: 5,
+        inputUsdPerMTok: 13,
         maxCallUsd: 0.5,
         monthlyUsd: 50,
+        outputUsdPerMTok: 50,
       },
       github: fakeGitHub.github,
       kv,

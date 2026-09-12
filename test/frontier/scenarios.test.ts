@@ -263,7 +263,13 @@ describe("scenario I — unrelated optional check pending", () => {
 describe("scenario J — budget exhausted", () => {
   test("fails before the request with no fallback model", async () => {
     const harness = createHarness({
-      budget: { dailyUsd: 5, maxCallUsd: 0.5, monthlyUsd: 50 },
+      budget: {
+        dailyUsd: 5,
+        inputUsdPerMTok: 13,
+        maxCallUsd: 0.5,
+        monthlyUsd: 50,
+        outputUsdPerMTok: 50,
+      },
     });
     await harness.kv.set(dayKey(HARNESS_NOW), {
       calls: 4,
@@ -349,6 +355,26 @@ describe("gate configuration", () => {
 });
 
 describe("budget reservation", () => {
+  test("the reservation is derived from the caps, not just the floor", async () => {
+    // A high output price makes the derived bound exceed the daily ceiling,
+    // even though the 0.5 floor alone would have allowed the review.
+    const harness = createHarness({
+      budget: {
+        dailyUsd: 3,
+        inputUsdPerMTok: 13,
+        maxCallUsd: 0.5,
+        monthlyUsd: 50,
+        outputUsdPerMTok: 1000,
+      },
+      reviews: [clean],
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("budget_exhausted");
+    expect(harness.model.calls).toHaveLength(0);
+  });
+
   test("the ledger records the real cost, not the reservation", async () => {
     const harness = createHarness({ reviews: [clean] });
 
@@ -376,7 +402,13 @@ describe("budget reservation", () => {
 
   test("concurrent reviews for different PRs cannot overshoot the ceiling", async () => {
     const kv = createMemoryKv();
-    const budget = { dailyUsd: 1, maxCallUsd: 0.5, monthlyUsd: 5 };
+    const budget = {
+      dailyUsd: 1,
+      inputUsdPerMTok: 0,
+      maxCallUsd: 0.5,
+      monthlyUsd: 5,
+      outputUsdPerMTok: 0,
+    };
     const first = createHarness({ budget, kv, reviews: [clean] });
     const second = createHarness({ budget, kv, reviews: [clean] });
 
