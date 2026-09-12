@@ -164,12 +164,12 @@ type FrontierFinding = {
 | `frontier-ready-final` | arm and run the single delta review #2                      |
 | `frontier-new-cycle`   | after a blocked cycle, explicitly start a new bounded cycle |
 
-| `frontier-quality` conclusion | Meaning                                                    |
-| ----------------------------- | ---------------------------------------------------------- |
+| `frontier-quality` conclusion | Meaning                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------ |
 | success                       | skipped (low value), a review passed, or a BLOCK later resolved for free |
-| action_required               | findings to fix, budget exhausted, or manual review needed |
-| neutral                       | required CI failing; nothing was spent                     |
-| failure                       | review #2 left blocking P0/P1/P2 findings                  |
+| action_required               | findings to fix, budget exhausted, or manual review needed               |
+| neutral                       | required CI failing; nothing was spent                                   |
+| failure                       | review #2 left blocking P0/P1/P2 findings                                |
 
 ## 7. Durable state is required
 
@@ -336,7 +336,7 @@ because each write produces a `check_run` event that re-enters the gate.
 
 - semantic verification of a repair after a BLOCK (resolution is deterministic:
   file changed + CI green, not a re-review)
-- a *passed* cycle that receives a further push is not re-verified; the new SHA
+- a _passed_ cycle that receives a further push is not re-verified; the new SHA
   has no `frontier-quality` run until a new cycle is started
 - automatic PASS_WITH_BACKLOG issue creation, and P2/P3 backlog deduplication
 - dashboards and ROI analytics beyond the recorded spend ledgers
