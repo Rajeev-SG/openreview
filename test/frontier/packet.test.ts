@@ -62,7 +62,7 @@ describe("buildPacket", () => {
     expect(packet.hash).toHaveLength(40);
   });
 
-  test("truncates an oversized diff but stays safe", () => {
+  test("truncates an oversized diff but stays safe, with an explicit banner", () => {
     const packet = buildPacket({
       ...base,
       diff: "+x".repeat(1400),
@@ -71,7 +71,19 @@ describe("buildPacket", () => {
 
     expect(packet.stats.truncated).toBe(true);
     expect(packet.unsafe).toBe(false);
-    expect(packet.text).toContain("truncated");
+    expect(packet.text).toContain("the diff below is truncated");
+    expect(packet.text).toContain("changed-file list is complete");
+  });
+
+  test("reviews a large-but-representable PR rather than refusing it", () => {
+    const packet = buildPacket({
+      ...base,
+      diff: "+x".repeat(10_000),
+      limits: { ...DEFAULT_FRONTIER_LIMITS, maxDiffChars: 4000 },
+    });
+
+    expect(packet.unsafe).toBe(false);
+    expect(packet.stats.truncated).toBe(true);
   });
 
   test("refuses to send an unrepresentative packet", () => {

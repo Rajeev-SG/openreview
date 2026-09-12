@@ -46,11 +46,12 @@ export interface Packet {
 }
 
 /**
- * Hard ceiling on "obviously unrepresentative" packets. If the raw diff is this
- * many times larger than the cap we refuse to review rather than sending a
- * misleading slice.
+ * Ceiling on "obviously unrepresentative" packets. A bounded diff slice plus a
+ * complete changed-file list is still useful, so ordinary large PRs are
+ * reviewed with an explicit truncation banner. Only a diff this many times
+ * larger than the cap (or an unwieldy file count) is refused outright.
  */
-const UNSAFE_DIFF_RATIO = 3;
+const UNSAFE_DIFF_RATIO = 10;
 const MAX_PACKET_FILES = 80;
 
 const SECRET_PATTERNS: { label: string; pattern: RegExp }[] = [
@@ -165,7 +166,15 @@ const headerSections = (
   return sections;
 };
 
-const changeSections = (input: PacketInput, diffText: string): string[] => [
+const TRUNCATION_BANNER =
+  "> NOTE: the diff below is truncated. The changed-file list is complete; " +
+  "judge from the listed files, the evidence and the implementation shown.";
+
+const changeSections = (
+  input: PacketInput,
+  diffText: string,
+  truncated: boolean
+): string[] => [
   "",
   "## Changed files",
   ...input.files.map(
@@ -174,12 +183,17 @@ const changeSections = (input: PacketInput, diffText: string): string[] => [
   ),
   "",
   "## Diff",
+  ...(truncated ? [TRUNCATION_BANNER, ""] : []),
   "```diff",
   diffText || "(empty)",
   "```",
 ];
 
-const deltaSections = (input: PacketInput, diffText: string): string[] => {
+const deltaSections = (
+  input: PacketInput,
+  diffText: string,
+  truncated: boolean
+): string[] => {
   const { delta } = input;
 
   if (!delta) {
@@ -197,6 +211,7 @@ const deltaSections = (input: PacketInput, diffText: string): string[] => {
     ...delta.originalFindings.map(renderFinding),
     "",
     `### Delta diff (${delta.fromSha.slice(0, 8)}..${input.headSha.slice(0, 8)})`,
+    ...(truncated ? [TRUNCATION_BANNER, ""] : []),
     "```diff",
     diffText,
     "```",
@@ -274,8 +289,8 @@ export const buildPacket = (input: PacketInput): Packet => {
   const head = [
     ...headerSections(input, body.text, issue.text),
     ...(input.delta
-      ? deltaSections(input, diff.text)
-      : changeSections(input, diff.text)),
+      ? deltaSections(input, diff.text, diff.truncated)
+      : changeSections(input, diff.text, diff.truncated)),
     ...tailSections(input),
   ];
 

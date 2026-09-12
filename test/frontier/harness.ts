@@ -13,6 +13,7 @@ import type {
   FrontierModelResponse,
 } from "@/lib/frontier/model";
 import { createMemoryKv } from "@/lib/frontier/store";
+import type { FrontierKv } from "@/lib/frontier/store";
 import type {
   FrontierBudgetLimits,
   FrontierFinding,
@@ -199,6 +200,7 @@ export interface Harness {
 
 export const createHarness = (input?: {
   budget?: FrontierBudgetLimits;
+  kv?: FrontierKv;
   limits?: Partial<FrontierLimits>;
   now?: Date;
   reviews?: FrontierReview[];
@@ -208,7 +210,7 @@ export const createHarness = (input?: {
   const state = defaultRepo(input?.repo);
   const fakeGitHub = createFakeGitHub(state);
   const model = createFakeModel(input?.reviews ?? [], input?.usage);
-  const kv = createMemoryKv();
+  const kv = input?.kv ?? createMemoryKv();
   const limits: FrontierLimits = {
     ...DEFAULT_FRONTIER_LIMITS,
     ...input?.limits,
@@ -217,7 +219,11 @@ export const createHarness = (input?: {
 
   return {
     deps: {
-      budget: input?.budget ?? { dailyUsd: 5, monthlyUsd: 50 },
+      budget: input?.budget ?? {
+        dailyUsd: 5,
+        maxCallUsd: 0.5,
+        monthlyUsd: 50,
+      },
       github: fakeGitHub.github,
       kv,
       limits,

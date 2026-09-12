@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
-import { dayKey } from "@/lib/frontier/budget";
+import { dayKey, readSpend } from "@/lib/frontier/budget";
 import { handleFrontierEvent } from "@/lib/frontier/engine";
 import type { FrontierOutcome } from "@/lib/frontier/engine";
+import { createMemoryKv } from "@/lib/frontier/store";
 import { FINAL_SIGNAL_LABEL, NEW_CYCLE_LABEL } from "@/lib/frontier/types";
 import type { FrontierReview } from "@/lib/frontier/types";
 
 import {
   createHarness,
+  DEFAULT_USAGE,
   finding,
   HARNESS_NOW,
   labelEvent,
@@ -261,11 +263,11 @@ describe("scenario I — unrelated optional check pending", () => {
 describe("scenario J — budget exhausted", () => {
   test("fails before the request with no fallback model", async () => {
     const harness = createHarness({
-      budget: { dailyUsd: 0.005, monthlyUsd: 50 },
+      budget: { dailyUsd: 5, maxCallUsd: 0.5, monthlyUsd: 50 },
     });
     await harness.kv.set(dayKey(HARNESS_NOW), {
-      calls: 1,
-      costUsd: 0.01,
+      calls: 4,
+      costUsd: 4.9,
     });
 
     const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
@@ -343,5 +345,52 @@ describe("gate configuration", () => {
 
     expect(outcome.status).toBe("passed");
     expect(harness.model.calls).toHaveLength(1);
+  });
+});
+
+describe("budget reservation", () => {
+  test("the ledger records the real cost, not the reservation", async () => {
+    const harness = createHarness({ reviews: [clean] });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    const ledger = await harness.kv.get<{ calls: number; costUsd: number }>(
+      dayKey(HARNESS_NOW)
+    );
+
+    expect(ledger).toEqual({ calls: 1, costUsd: DEFAULT_USAGE.costUsd });
+  });
+
+  test("an unsafe packet releases nothing because nothing was reserved", async () => {
+    const harness = createHarness({
+      repo: { diff: "+x".repeat(200_000) },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("needs_manual_review");
+    const spend = await readSpend(harness.kv, HARNESS_NOW);
+
+    expect(spend.daily.costUsd).toBe(0);
+  });
+
+  test("concurrent reviews for different PRs cannot overshoot the ceiling", async () => {
+    const kv = createMemoryKv();
+    const budget = { dailyUsd: 1, maxCallUsd: 0.5, monthlyUsd: 5 };
+    const first = createHarness({ budget, kv, reviews: [clean] });
+    const second = createHarness({ budget, kv, reviews: [clean] });
+
+    const outcomes = await Promise.all([
+      handleFrontierEvent(first.deps, pullRequestEvent({ prNumber: 7 })),
+      handleFrontierEvent(second.deps, pullRequestEvent({ prNumber: 8 })),
+    ]);
+
+    const paidCalls = first.model.calls.length + second.model.calls.length;
+    const spend = await readSpend(kv, HARNESS_NOW);
+
+    expect(paidCalls).toBe(1);
+    expect(outcomes.length).toBe(2);
+    expect(spend.daily.costUsd).toBeLessThanOrEqual(budget.dailyUsd);
+    expect(spend.daily.calls).toBe(1);
   });
 });

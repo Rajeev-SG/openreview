@@ -1,4 +1,8 @@
-import { checkBudget, recordSpend } from "@/lib/frontier/budget";
+import {
+  describeSpend,
+  reconcileBudget,
+  reserveBudget,
+} from "@/lib/frontier/budget";
 import { parseRepoConfig } from "@/lib/frontier/config";
 import { evaluateGate, gateSummary } from "@/lib/frontier/gate";
 import type { GateChangedFile } from "@/lib/frontier/gate";
@@ -244,7 +248,7 @@ const findingsJson = (findings: FrontierFinding[]): string =>
 const blockingFindings = (findings: FrontierFinding[]): FrontierFinding[] =>
   findings.filter((finding) => finding.severity !== "P3");
 
-const recordReview = async (
+const recordReview = (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
   input: {
@@ -261,7 +265,7 @@ const recordReview = async (
     };
   },
   now: Date
-): Promise<void> => {
+): void => {
   state.reviews.push({
     createdAt: now.toISOString(),
     findings: input.findings,
@@ -274,24 +278,20 @@ const recordReview = async (
   state.packetHashes.push(input.packetHash);
   state.reviewCount = input.reviewNumber;
 
-  await recordSpend(deps.kv, now, {
-    costUsd: input.usage.costUsd,
-    inputTokens: input.usage.inputTokens,
-    model: input.usage.model,
-    outputTokens: input.usage.outputTokens,
-    prNumber: state.prNumber,
-    repo: state.repo,
-    reviewNumber: input.reviewNumber,
-    timestamp: now.toISOString(),
-  });
-
   emit(deps, "frontier.spend", {
-    costUsd: input.usage.costUsd,
     cycleId: state.cycleId,
-    model: input.usage.model,
     prNumber: state.prNumber,
     repo: state.repo,
-    reviewNumber: input.reviewNumber,
+    ...describeSpend({
+      costUsd: input.usage.costUsd,
+      inputTokens: input.usage.inputTokens,
+      model: input.usage.model,
+      outputTokens: input.usage.outputTokens,
+      prNumber: state.prNumber,
+      repo: state.repo,
+      reviewNumber: input.reviewNumber,
+      timestamp: now.toISOString(),
+    }),
   });
 };
 
@@ -394,25 +394,6 @@ const runFirstReview = async (
     };
   }
 
-  const budget = await checkBudget(deps.kv, now, deps.budget);
-  if (!budget.allowed) {
-    state.lifecycle = "budget_exhausted";
-    await setCheck(deps, state, {
-      conclusion: "action_required",
-      status: "completed",
-      summary: `Frontier review skipped: ${budget.reason}. No fallback model is used.`,
-      title: "Frontier review skipped: budget exhausted",
-    });
-    return {
-      calls: 0,
-      costUsd: 0,
-      cycleId: state.cycleId,
-      detail: `budget: ${budget.reason}`,
-      reviewCount: state.reviewCount,
-      status: "budget_exhausted",
-    };
-  }
-
   const issue = await deps.github.getLinkedIssue(state.repo, state.prNumber);
   const diff = await deps.github.getDiff(state.repo, state.prNumber);
   const contextFiles = await buildContextFiles(
@@ -478,6 +459,30 @@ const runFirstReview = async (
     };
   }
 
+  const budget = await reserveBudget(
+    deps.kv,
+    now,
+    deps.budget,
+    deps.budget.maxCallUsd
+  );
+  if (!budget.allowed) {
+    state.lifecycle = "budget_exhausted";
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier review skipped: ${budget.reason}. No fallback model is used.`,
+      title: "Frontier review skipped: budget exhausted",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `budget: ${budget.reason}`,
+      reviewCount: state.reviewCount,
+      status: "budget_exhausted",
+    };
+  }
+
   await setCheck(deps, state, {
     status: "in_progress",
     summary: "Frontier review #1 running",
@@ -512,13 +517,20 @@ const runFirstReview = async (
   }
 
   await deps.kv.set(key, 1, IDEMPOTENCY_TTL_MS);
+  // Replace the reservation with the real billed cost.
+  await reconcileBudget(
+    deps.kv,
+    now,
+    deps.budget.maxCallUsd,
+    response.usage.costUsd
+  );
 
   state.initialReviewSha = pr.headSha;
   state.findings = response.review.findings;
 
   if (response.review.verdict === "pass") {
     state.lifecycle = "passed";
-    await recordReview(
+    recordReview(
       deps,
       state,
       {
@@ -547,7 +559,7 @@ const runFirstReview = async (
   }
 
   state.lifecycle = "waiting_final_signal";
-  await recordReview(
+  recordReview(
     deps,
     state,
     {
@@ -644,25 +656,6 @@ const attemptFinalReview = async (
     };
   }
 
-  const budget = await checkBudget(deps.kv, now, deps.budget);
-  if (!budget.allowed) {
-    state.lifecycle = "budget_exhausted";
-    await setCheck(deps, state, {
-      conclusion: "action_required",
-      status: "completed",
-      summary: `Final frontier review skipped: ${budget.reason}`,
-      title: "Frontier review skipped: budget exhausted",
-    });
-    return {
-      calls: 0,
-      costUsd: 0,
-      cycleId: state.cycleId,
-      detail: `budget: ${budget.reason}`,
-      reviewCount: state.reviewCount,
-      status: "budget_exhausted",
-    };
-  }
-
   const diff = await deps.github.getDeltaDiff(state.repo, from, pr.headSha);
   const packet = buildPacket({
     baseSha: from,
@@ -720,6 +713,30 @@ const attemptFinalReview = async (
     };
   }
 
+  const budget = await reserveBudget(
+    deps.kv,
+    now,
+    deps.budget,
+    deps.budget.maxCallUsd
+  );
+  if (!budget.allowed) {
+    state.lifecycle = "budget_exhausted";
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Final frontier review skipped: ${budget.reason}`,
+      title: "Frontier review skipped: budget exhausted",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `budget: ${budget.reason}`,
+      reviewCount: state.reviewCount,
+      status: "budget_exhausted",
+    };
+  }
+
   await setCheck(deps, state, {
     status: "in_progress",
     summary: "Frontier final review running",
@@ -754,12 +771,18 @@ const attemptFinalReview = async (
   }
 
   await deps.kv.set(key, 1, IDEMPOTENCY_TTL_MS);
+  await reconcileBudget(
+    deps.kv,
+    now,
+    deps.budget.maxCallUsd,
+    response.usage.costUsd
+  );
 
   state.finalReviewSha = pr.headSha;
   state.finalSignalPending = false;
   state.findings = response.review.findings;
 
-  await recordReview(
+  recordReview(
     deps,
     state,
     {

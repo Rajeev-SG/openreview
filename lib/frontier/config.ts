@@ -21,6 +21,12 @@ export const DEFAULT_FRONTIER_LIMITS: FrontierLimits = {
 
 const DEFAULT_DAILY_BUDGET_USD = 5;
 const DEFAULT_MONTHLY_BUDGET_USD = 50;
+/**
+ * Conservative upper bound reserved for a single review before it runs, so the
+ * ceilings are hard bounds. Deliberately above the observed cost of one
+ * gpt-6-astra call at the default packet and output caps.
+ */
+const DEFAULT_MAX_CALL_USD = 0.5;
 
 const readNumber = (
   raw: string | undefined,
@@ -109,6 +115,9 @@ export const readFrontierBudget = (
     DEFAULT_DAILY_BUDGET_USD,
     { min: 0 }
   ),
+  maxCallUsd: readNumber(source.FRONTIER_MAX_CALL_USD, DEFAULT_MAX_CALL_USD, {
+    min: 0,
+  }),
   monthlyUsd: readNumber(
     source.FRONTIER_MONTHLY_BUDGET_USD,
     DEFAULT_MONTHLY_BUDGET_USD,

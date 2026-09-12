@@ -117,8 +117,10 @@ MAX_PR_BODY_CHARS=4000       MAX_LINKED_ISSUE_CHARS=5000
 MAX_OUTPUT_TOKENS=3000
 ```
 
-If the diff is more than 3× the diff cap, or more than 80 files change, the
-packet is refused as `needs_manual_review` rather than sent unrepresentative.
+A truncated diff is always marked with an explicit banner — truncation is never
+silent. If the raw diff is more than 10× the diff cap, or more than 80 files
+change, the packet is refused as `needs_manual_review` instead of being sent
+unrepresentative.
 
 ## 5. Model call
 
@@ -181,14 +183,24 @@ FRONTIER_MAX_OUTPUT_TOKENS=3000
 FRONTIER_MAX_PACKET_CHARS=50000
 FRONTIER_DAILY_BUDGET_USD=5
 FRONTIER_MONTHLY_BUDGET_USD=50
+FRONTIER_MAX_CALL_USD=0.5            (upper bound reserved per review)
 FRONTIER_ENABLED=true
 FRONTIER_MODEL=openai/gpt-6-astra
 FRONTIER_REQUIRED_CHECKS=            (optional override, comma separated)
 ```
 
-The budget guard runs **before** the request and fails closed: if the ledger
-cannot be read, or a budget is 0, or the ceiling is reached, the review is
-skipped with `0` calls and no fallback model.
+The ceilings are **hard bounds**, not advisory. Before a review runs the engine
+reserves `FRONTIER_MAX_CALL_USD` against both the daily and the monthly ledger
+and refuses the review unless the remaining allowance can cover it; after the
+call the reservation is reconciled to the real billed cost. A call whose real
+cost cannot be determined keeps its reservation (conservative). Reservations are
+serialised under a dedicated spend lock, because the daily and monthly keys are
+shared across PRs and the per-PR lock alone would allow concurrent reviews to
+lose increments.
+
+The guard runs **before** the request and fails closed: if the ledger cannot be
+read, or a budget is 0, or the remaining allowance cannot cover one review, the
+review is skipped with `0` calls and no fallback model.
 
 Exact OpenRouter usage (`prompt_tokens`, `completion_tokens`, `cost`, model) is
 recorded per review in the PR state and in daily/monthly spend ledgers.

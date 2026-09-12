@@ -9,7 +9,8 @@
     "check": "ultracite check",
     "fix": "ultracite fix",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke:frontier": "bun scripts/frontier-smoke.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.31",
