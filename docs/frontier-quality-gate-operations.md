@@ -21,6 +21,9 @@ scratch, and the traps that cost real time.
 ## Setup, in order
 
 1. **Deploy the app** and set the environment variables (below).
+   1b. **Make the repository's own CI check required too**, alongside
+   `frontier-quality`, so the gate has something meaningful to wait for. Where
+   `frontier-quality` is the only required check, the gate reviews immediately.
 2. **Create the GitHub App** with a webhook pointing at
    `https://<deployment>/api/webhooks`, and set its secret to
    `GITHUB_APP_WEBHOOK_SECRET`.
@@ -65,10 +68,49 @@ the model provider):
 ## GitHub App settings
 
 Repository permissions: **Checks: Read & write** (to create `frontier-quality`),
-plus `contents`, `issues` and `pull_requests` (write) for the existing paths.
+**Administration: Read-only** (to read the branch's required checks), plus
+`contents`, `issues` and `pull_requests` (write) for the existing paths.
 
 Subscribe to events: `pull_request`, `check_run`, `issue_comment`,
 `pull_request_review_comment`.
+
+### Trap: without `administration`, the gate silently ignores required CI
+
+Reading a branch's required checks requires repository **Administration** access.
+An App without it gets `403 Resource not accessible by integration`, and if that
+is treated as "no required checks" the gate reviews immediately instead of
+waiting for CI — the wait-for-required-CI guarantee silently stops working.
+
+The gate **fails closed**: an unreadable required-check list is reported as
+_unknown_, not as "no required checks". It writes an `action_required` check
+explaining that CI could not be determined, and spends **$0** rather than
+reviewing without being able to honour the wait-for-CI guarantee.
+
+Either grant **Administration: Read-only** (and accept the installation update),
+or set `FRONTIER_REQUIRED_CHECKS` — which takes precedence over branch
+protection when set. Verify with an installation token:
+
+```bash
+# should be 200, not 403
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer <installation-token>" \
+  https://api.github.com/repos/<owner>/<repo>/branches/main/protection/required_status_checks
+```
+
+### Precedence of FRONTIER_REQUIRED_CHECKS
+
+When set, `FRONTIER_REQUIRED_CHECKS` **replaces** branch protection entirely for
+that deployment (branch protection is not consulted), and the gate's own check
+is stripped out of it. Use it for repositories the App cannot read, or to pin an
+explicit list. A name listed there that never reports will hang the gate at
+"waiting for required CI" indefinitely, so list only checks that actually run.
+
+### Trap: the gate must never be its own required check
+
+`frontier-quality` is normally a required branch check, and the gate reads
+required checks to decide whether it may spend. Left in that list, it would wait
+for the check it is about to create and deadlock — every PR stuck at
+"Expected — waiting for status to be reported". It is always excluded.
 
 ### Trap: the permission change needs a second approval
 

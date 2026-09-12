@@ -1,13 +1,17 @@
 import "server-only";
 import type { Octokit } from "octokit";
 
-import { withoutSelfCheck } from "@/lib/frontier/checks";
+import {
+  classifyRequiredChecksFailure,
+  withoutSelfCheck,
+} from "@/lib/frontier/checks";
 import type { GateChangedFile } from "@/lib/frontier/gate";
 import type {
   CheckRunView,
   FrontierGitHub,
   LinkedIssue,
   PullRequestView,
+  RequiredChecksResult,
 } from "@/lib/frontier/github";
 import { FRONTIER_CHECK_NAME } from "@/lib/frontier/types";
 import { getInstallationOctokit } from "@/lib/github";
@@ -229,10 +233,12 @@ export const createOctokitFrontierGitHub = (
     getRequiredChecks: async (
       repo: string,
       baseBranch: string
-    ): Promise<string[]> => {
+    ): Promise<RequiredChecksResult> => {
+      // An explicit override wins over branch protection, so a repository the
+      // App cannot read can still be gated by configuration.
       const override = requiredChecksOverride();
       if (override.length > 0) {
-        return withoutSelfCheck(override);
+        return { known: true, names: withoutSelfCheck(override) };
       }
 
       const { owner, repo: name } = split(repo);
@@ -247,12 +253,38 @@ export const createOctokitFrontierGitHub = (
         const contexts = data.contexts ?? [];
         const checks = (data.checks ?? []).map((check) => check.context);
 
-        return withoutSelfCheck([...contexts, ...checks]);
+        return {
+          known: true,
+          names: withoutSelfCheck([...contexts, ...checks]),
+        };
       } catch (error) {
         const { status } = error as { status?: number };
-        if (status === 404 || status === 403) {
-          return [];
+        const kind = classifyRequiredChecksFailure(status);
+
+        // 404: the branch genuinely has no protection, so there is nothing to wait for.
+        if (kind === "none") {
+          return { known: true, names: [] };
         }
+
+        // 403: the App cannot read protection. This must NOT masquerade as
+        // "no required checks" - the caller would spend frontier tokens without
+        // being able to verify CI. Report it as unknown and let the gate fail closed.
+        if (kind === "unreadable") {
+          // 403 has several causes (missing administration permission, the repo
+          // not being selected in the installation, org restrictions). Report
+          // GitHub's own message rather than asserting one cause.
+          const apiMessage = (
+            error as { response?: { data?: { message?: string } } }
+          ).response?.data?.message;
+
+          return {
+            known: false,
+            reason:
+              `required CI could not be determined (${apiMessage ?? "permission denied reading branch protection"}). ` +
+              "Grant repository 'administration: read' on the App, or set FRONTIER_REQUIRED_CHECKS",
+          };
+        }
+
         throw error;
       }
     },

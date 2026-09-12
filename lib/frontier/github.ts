@@ -49,6 +49,16 @@ export interface FrontierCheckUpdate {
  * Everything the engine needs from GitHub. Kept as an interface so the accept
  * tests can drive scenarios A–J deterministically without a live API.
  */
+/**
+ * Required checks are either read (maybe empty) or *unknown*, which happens
+ * when the App cannot read branch protection. "Unknown" must not be confused
+ * with "none": treating them the same silently disables the wait-for-required-CI
+ * guarantee.
+ */
+export type RequiredChecksResult =
+  | { known: true; names: string[] }
+  | { known: false; reason: string };
+
 export interface FrontierGitHub {
   getChangedFiles: (
     repo: string,
@@ -75,7 +85,7 @@ export interface FrontierGitHub {
     repo: string,
     baseBranch: string,
     ref: string
-  ) => Promise<string[]>;
+  ) => Promise<RequiredChecksResult>;
   listCheckRuns: (repo: string, ref: string) => Promise<CheckRunView[]>;
   postComment: (repo: string, prNumber: number, body: string) => Promise<void>;
   setFrontierCheck: (update: FrontierCheckUpdate) => Promise<number>;

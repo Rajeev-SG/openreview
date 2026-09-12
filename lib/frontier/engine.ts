@@ -111,6 +111,26 @@ const FAILING_CONCLUSIONS = new Set([
 
 const TERMINAL_LIFECYCLES = new Set(["passed", "blocked"]);
 
+/**
+ * How long the gate may sit at "waiting for required CI" before it gives up and
+ * fails closed. Without a bound, a required check that never reports would park
+ * the check at in_progress forever with no explanation.
+ */
+const DEFAULT_CI_WAIT_MS = 30 * 60 * 1000;
+
+const ciWaitMs = (): number => {
+  const raw = Number(process.env.FRONTIER_CI_WAIT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CI_WAIT_MS;
+};
+
+const ciWaitExpired = (state: FrontierPrState, now: Date): boolean => {
+  if (!state.ciWaitingSince) {
+    return false;
+  }
+
+  return now.getTime() - Date.parse(state.ciWaitingSince) > ciWaitMs();
+};
+
 const nowOf = (deps: FrontierEngineDeps): Date => deps.now?.() ?? new Date();
 
 const reservationFor = (deps: FrontierEngineDeps): number =>
@@ -181,6 +201,8 @@ interface CiStatus {
   ok: boolean;
   pending: string[];
   required: string[];
+  /** Set when required CI cannot be determined; the caller must not spend. */
+  unknown?: string;
 }
 
 const resolveCi = async (
@@ -189,7 +211,22 @@ const resolveCi = async (
   baseBranch: string,
   ref: string
 ): Promise<CiStatus> => {
-  const required = await deps.github.getRequiredChecks(repo, baseBranch, ref);
+  const resolved = await deps.github.getRequiredChecks(repo, baseBranch, ref);
+
+  // Fail closed: without a trustworthy view of required CI the gate cannot
+  // honour its "wait for required CI before spending" guarantee.
+  if (!resolved.known) {
+    return {
+      evidence: [],
+      failed: [],
+      ok: false,
+      pending: [],
+      required: [],
+      unknown: resolved.reason,
+    };
+  }
+
+  const required = resolved.names;
   const runs = await deps.github.listCheckRuns(repo, ref);
 
   const requiredRuns = runs.filter((run) => required.includes(run.name));
@@ -332,6 +369,101 @@ const reviewSummaryComment = (review: FrontierReview): string =>
     "Push your fixes, wait for required CI to go green, then add the `frontier-ready-final` label to request the single delta review. Repair pushes on their own never trigger another paid review.",
   ].join("\n");
 
+/**
+ * Handle a required-CI state that is not simply "green": unknown, failing, or
+ * still pending. Returns the outcome to short-circuit with, or null to proceed.
+ *
+ * Parking on a pending check is bounded: a required check that never reports
+ * (renamed job, path filter, or a typo in FRONTIER_REQUIRED_CHECKS) must not
+ * block the PR forever behind an in_progress check.
+ */
+const handleCiNotReady = async (
+  deps: FrontierEngineDeps,
+  state: FrontierPrState,
+  ci: CiStatus,
+  now: Date,
+  phase: "final review" | "review #1"
+): Promise<FrontierOutcome | null> => {
+  if (ci.unknown) {
+    state.lifecycle = "needs_manual_review";
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier review skipped: required CI could not be determined (${ci.unknown}). No frontier tokens were spent.`,
+      title: "Frontier review needs CI configuration",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `required CI unknown: ${ci.unknown}`,
+      reviewCount: state.reviewCount,
+      status: "needs_manual_review",
+    };
+  }
+
+  if (ci.ok) {
+    state.ciWaitingSince = undefined;
+    return null;
+  }
+
+  const where = phase === "review #1" ? "" : " on the repair push";
+
+  if (ci.failed.length > 0) {
+    state.lifecycle = "ci_failed";
+    await setCheck(deps, state, {
+      conclusion: "neutral",
+      status: "completed",
+      summary: `Required CI is failing${where}: ${ci.failed
+        .map((run) => `${run.name} (${run.conclusion})`)
+        .join(", ")}. No frontier tokens were spent.`,
+      title: "Frontier review skipped: required CI failed",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `required CI failed${where}`,
+      reviewCount: state.reviewCount,
+      status: "ci_failed",
+    };
+  }
+
+  if (ciWaitExpired(state, now)) {
+    state.lifecycle = "needs_manual_review";
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier review skipped: required checks never reported (${ci.pending.join(", ")}). A required check that never runs is not waited for indefinitely; check FRONTIER_REQUIRED_CHECKS and the branch protection settings.`,
+      title: "Frontier review: required check never reported",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `required checks never reported: ${ci.pending.join(", ")}`,
+      reviewCount: state.reviewCount,
+      status: "needs_manual_review",
+    };
+  }
+
+  state.ciWaitingSince ??= now.toISOString();
+  state.lifecycle = "waiting_ci";
+  await setCheck(deps, state, {
+    status: "in_progress",
+    summary: `Waiting for required checks${where}: ${ci.pending.join(", ") || "unknown"}`,
+    title: `Frontier ${phase} waiting for CI`,
+  });
+  return {
+    calls: 0,
+    costUsd: 0,
+    cycleId: state.cycleId,
+    detail: `required CI pending${where}`,
+    reviewCount: state.reviewCount,
+    status: "waiting_ci",
+  };
+};
+
 const runFirstReview = async (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
@@ -381,41 +513,10 @@ const runFirstReview = async (
 
   const ci = await resolveCi(deps, state.repo, pr.baseBranch, pr.headSha);
 
-  if (!ci.ok) {
-    if (ci.failed.length > 0) {
-      state.lifecycle = "ci_failed";
-      await setCheck(deps, state, {
-        conclusion: "neutral",
-        status: "completed",
-        summary: `Required CI is failing: ${ci.failed
-          .map((run) => `${run.name} (${run.conclusion})`)
-          .join(", ")}. No frontier tokens were spent.`,
-        title: "Frontier review skipped: required CI failed",
-      });
-      return {
-        calls: 0,
-        costUsd: 0,
-        cycleId: state.cycleId,
-        detail: "required CI failed",
-        reviewCount: state.reviewCount,
-        status: "ci_failed",
-      };
-    }
+  const ciOutcome = await handleCiNotReady(deps, state, ci, now, "review #1");
 
-    state.lifecycle = "waiting_ci";
-    await setCheck(deps, state, {
-      status: "in_progress",
-      summary: `Waiting for required checks: ${ci.pending.join(", ") || "unknown"}`,
-      title: "Frontier review waiting for required CI",
-    });
-    return {
-      calls: 0,
-      costUsd: 0,
-      cycleId: state.cycleId,
-      detail: "required CI pending",
-      reviewCount: state.reviewCount,
-      status: "waiting_ci",
-    };
+  if (ciOutcome) {
+    return ciOutcome;
   }
 
   const issue = await deps.github.getLinkedIssue(state.repo, state.prNumber);
@@ -654,40 +755,16 @@ const attemptFinalReview = async (
 
   const ci = await resolveCi(deps, state.repo, pr.baseBranch, pr.headSha);
 
-  if (!ci.ok) {
-    if (ci.failed.length > 0) {
-      state.lifecycle = "ci_failed";
-      await setCheck(deps, state, {
-        conclusion: "neutral",
-        status: "completed",
-        summary: `Required CI is failing on the repair push: ${ci.failed
-          .map((run) => `${run.name} (${run.conclusion})`)
-          .join(", ")}. No frontier tokens were spent.`,
-        title: "Frontier final review waiting on CI",
-      });
-      return {
-        calls: 0,
-        costUsd: 0,
-        cycleId: state.cycleId,
-        detail: "required CI failed on repair push",
-        reviewCount: state.reviewCount,
-        status: "ci_failed",
-      };
-    }
+  const ciOutcome = await handleCiNotReady(
+    deps,
+    state,
+    ci,
+    now,
+    "final review"
+  );
 
-    await setCheck(deps, state, {
-      status: "in_progress",
-      summary: `Waiting for required checks before final review: ${ci.pending.join(", ") || "unknown"}`,
-      title: "Frontier final review waiting for CI",
-    });
-    return {
-      calls: 0,
-      costUsd: 0,
-      cycleId: state.cycleId,
-      detail: "required CI pending on repair push",
-      reviewCount: state.reviewCount,
-      status: "waiting_ci",
-    };
+  if (ciOutcome) {
+    return ciOutcome;
   }
 
   const diff = await deps.github.getDeltaDiff(state.repo, from, pr.headSha);

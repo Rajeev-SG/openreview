@@ -23,6 +23,8 @@ import type {
 
 export interface FakeRepoState {
   checks: CheckRunView[];
+  /** When set, the fake reports required CI as unreadable. */
+  requiredUnknown?: string;
   config?: string | null;
   deltaDiffs?: Record<string, string>;
   diff: string;
@@ -83,7 +85,12 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
     },
     getRequiredChecks: async () => {
       await yieldMicrotask();
-      return state.required;
+
+      if (state.requiredUnknown) {
+        return { known: false, reason: state.requiredUnknown };
+      }
+
+      return { known: true, names: state.required };
     },
     listCheckRuns: async () => {
       await yieldMicrotask();

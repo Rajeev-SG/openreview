@@ -16,3 +16,22 @@ export const withoutSelfCheck = (
   [...new Set(names)].filter(
     (name): name is string => Boolean(name) && name !== FRONTIER_CHECK_NAME
   );
+
+/**
+ * Classify a failed read of a branch's required checks.
+ *
+ * - `none`       the branch has no protection: there is genuinely nothing to wait for
+ * - `unreadable` the App is not permitted to read it (403): the answer is unknown
+ * - `throw`      anything else is a real error and must surface
+ */
+export const classifyRequiredChecksFailure = (
+  status?: number | undefined
+): "none" | "unreadable" | "throw" => {
+  if (status === 404) {
+    return "none";
+  }
+  if (status === 403) {
+    return "unreadable";
+  }
+  return "throw";
+};

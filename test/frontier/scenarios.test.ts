@@ -485,3 +485,69 @@ describe("durable state requirement", () => {
     );
   });
 });
+
+describe("required CI cannot be read", () => {
+  test("fails closed with zero spend rather than reviewing ungated", async () => {
+    const harness = createHarness({
+      repo: {
+        requiredUnknown:
+          "the GitHub App cannot read branch protection (it needs repository 'administration' permission)",
+      },
+      reviews: [clean],
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("needs_manual_review");
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(0);
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe(
+      "action_required"
+    );
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.summary).toContain(
+      "administration"
+    );
+  });
+});
+
+describe("a required check that never reports", () => {
+  test("fails closed after the bounded wait instead of parking forever", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [{ conclusion: null, name: "ci", status: "in_progress" }],
+      },
+      reviews: [clean],
+    });
+
+    // Seed a state that has already been waiting well past the bound.
+    await harness.kv.set("frontier:pr:acme/widgets#7", {
+      // Relative to the harness clock, not wall-clock: the engine compares
+      // against deps.now().
+      ciWaitingSince: new Date(
+        HARNESS_NOW.getTime() - 60 * 60 * 1000
+      ).toISOString(),
+      cycleId: 1,
+      headSha: "head0001",
+      lifecycle: "waiting_ci",
+      packetHashes: [],
+      prNumber: 7,
+      repo: "acme/widgets",
+      reviewCount: 0,
+      reviews: [],
+      updatedAt: HARNESS_NOW.toISOString(),
+      version: 1,
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("needs_manual_review");
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(0);
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe(
+      "action_required"
+    );
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.summary).toContain(
+      "never reported"
+    );
+  });
+});
