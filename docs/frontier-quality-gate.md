@@ -203,6 +203,12 @@ tokens (`FRONTIER_*_USD_PER_MTOK`), plus a system-prompt allowance, so it scales
 with the caps that actually determine the billable size of a request.
 `FRONTIER_MAX_CALL_USD` is a floor an operator can raise.
 
+Because a token cannot be shorter than one character, the input estimate divides
+the packet cap by 1, which is the only defensible upper bound; denser ratios
+under-reserve on punctuation-heavy, code-heavy or non-English content. The
+reservation is therefore deliberately pessimistic and is reconciled down to the
+real billed cost after each review.
+
 Reservations carry an identity: the reservation record is deleted when it is
 claimed, before the ledger is adjusted, so an interrupted reconciliation can
 never be retried into a second adjustment — a partial failure leaves the ledger

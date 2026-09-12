@@ -24,10 +24,12 @@ export const reservationKey = (reservationId: string): string =>
 const round6 = (value: number): number => Number(value.toFixed(6));
 
 /**
- * Worst-case characters per token. Real prompts tokenise denser than this, so
- * dividing by it over-estimates the input tokens.
+ * Worst-case characters per token. A token cannot be shorter than one
+ * character, so dividing by 1 is the only defensible upper bound for the input
+ * tokens a permitted packet can produce. Anything denser would under-reserve on
+ * punctuation-heavy, code-heavy or non-English content.
  */
-const CHARS_PER_TOKEN_FLOOR = 3;
+const CHARS_PER_TOKEN_FLOOR = 1;
 /** Headroom for the system prompt and schema, which are not in the packet. */
 const SYSTEM_PROMPT_TOKENS = 2000;
 
