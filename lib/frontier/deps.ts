@@ -1,6 +1,6 @@
 import "server-only";
 import { getInstallationOctokit } from "@/lib/github";
-import { stateAdapter } from "@/lib/state";
+import { isDurableState, stateAdapter } from "@/lib/state";
 
 import {
   isFrontierEnabled,
@@ -19,6 +19,7 @@ export const createFrontierDeps = (): FrontierEngineDeps => {
   return {
     budget: readFrontierBudget(),
     github: createOctokitFrontierGitHub(getInstallationOctokit()),
+    isDurableState: isDurableState(),
     kv: stateAdapter as FrontierKv,
     limits: readFrontierLimits(),
     log: (event, meta) => {

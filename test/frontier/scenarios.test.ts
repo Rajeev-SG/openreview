@@ -265,10 +265,10 @@ describe("scenario J — budget exhausted", () => {
     const harness = createHarness({
       budget: {
         dailyUsd: 5,
-        inputUsdPerMTok: 13,
+        inputUsdPerMTok: 1.4,
         maxCallUsd: 0.5,
         monthlyUsd: 50,
-        outputUsdPerMTok: 50,
+        outputUsdPerMTok: 4.4,
       },
     });
     await harness.kv.set(dayKey(HARNESS_NOW), {
@@ -361,7 +361,7 @@ describe("budget reservation", () => {
     const harness = createHarness({
       budget: {
         dailyUsd: 3,
-        inputUsdPerMTok: 13,
+        inputUsdPerMTok: 1.4,
         maxCallUsd: 0.5,
         monthlyUsd: 50,
         outputUsdPerMTok: 1000,
@@ -424,5 +424,22 @@ describe("budget reservation", () => {
     expect(outcomes.length).toBe(2);
     expect(spend.daily.costUsd).toBeLessThanOrEqual(budget.dailyUsd);
     expect(spend.daily.calls).toBe(1);
+  });
+});
+
+describe("durable state requirement", () => {
+  test("fails closed with zero spend when the store is ephemeral", async () => {
+    const harness = createHarness({ reviews: [clean] });
+    const deps = { ...harness.deps, isDurableState: false };
+
+    const outcome = await handleFrontierEvent(deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("needs_durable_state");
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(0);
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("neutral");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.summary).toContain(
+      "REDIS_URL"
+    );
   });
 });
