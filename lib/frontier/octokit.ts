@@ -250,9 +250,26 @@ export const createOctokitFrontierGitHub = (
         return withoutSelfCheck([...contexts, ...checks]);
       } catch (error) {
         const { status } = error as { status?: number };
-        if (status === 404 || status === 403) {
+
+        // 404 means the branch genuinely has no protection: nothing to wait for.
+        if (status === 404) {
           return [];
         }
+
+        // 403 means the App cannot *read* protection (it lacks repository
+        // `administration`). Returning [] silently would disable the
+        // wait-for-required-CI guarantee without anyone noticing, so say so
+        // loudly and let the operator set FRONTIER_REQUIRED_CHECKS.
+        if (status === 403) {
+          console.warn(
+            `[frontier] cannot read branch protection for ${repo}#${baseBranch}: ` +
+              "the GitHub App lacks repository 'administration' permission. " +
+              "Required CI will NOT gate the review. Grant 'administration: read' " +
+              "on the App, or set FRONTIER_REQUIRED_CHECKS."
+          );
+          return [];
+        }
+
         throw error;
       }
     },
