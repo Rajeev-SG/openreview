@@ -307,12 +307,16 @@ calls**:
 
 1. The blocked cycle records the reviewed SHA and the blocking findings.
 2. A repair push is compared against that SHA (`compare/{base}...{head}`).
-3. Every blocking finding must name a file, and that file must appear in the
-   repair delta.
-4. The repository's required CI must be green (the `frontier-quality` check
+3. Every blocking finding must name a file that appears in the repair delta.
+   Paths come from model output, so a leading `./` and an unambiguous wrong
+   directory prefix are tolerated; the match mode is shown in the evidence.
+4. When the finding names a `line`, a changed hunk must actually cover that
+   line - touching the file elsewhere is not a repair.
+5. Deleting the flagged file is never a repair.
+6. The repository's required CI must be green (the `frontier-quality` check
    itself is excluded, as always).
 
-If all four hold, `frontier-quality` is written as **success** and the PR can
+If all of these hold, `frontier-quality` is written as **success** and the PR can
 merge; the gate posts the resolution map as the audit trail. Otherwise the check
 stays **failure**, and its output lists exactly which findings are unresolved
 and why.
@@ -323,14 +327,20 @@ and why.
 | F2 | P0 | - | unresolved | no file path; not deterministically verifiable |
 ```
 
-What this does and does not prove: it proves the flagged file changed and CI
-passed. It is **not** a semantic re-review - that was review #2's job. A finding
-that names no file (an architectural or judgement finding) can never be
-auto-resolved, so the PR stays blocked and the operator decides: fix it by hand
-and re-run, or buy a new cycle with `frontier-new-cycle`.
+What this does and does not prove: it proves the flagged file changed at the
+flagged location and that CI passed. It is **not** a semantic re-review - that
+was review #2's job, and the resolution pass deliberately never substitutes for
+one. A finding that names no file (an architectural or judgement finding), one
+whose stale `line` no longer matches the change, or a repair that only deletes
+the file, can never be auto-resolved: the PR stays blocked and the operator
+decides whether to fix it by hand or buy a new cycle with `frontier-new-cycle`.
 
-The pass is idempotent: the check is rewritten only when the map changes,
-because each write produces a `check_run` event that re-enters the gate.
+The pass is idempotent on a stable key - the head SHA plus the yes/no verdict -
+so a re-entering `check_run` event (every check write produces one) cannot loop,
+and evidence wording that changes without changing the verdict does not rewrite
+the check or post a second comment. Durable state is updated only after the
+GitHub writes succeed, so a failed write cannot leave state claiming a
+resolution that was never posted.
 
 ## Not yet covered
 

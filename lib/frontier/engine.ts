@@ -21,7 +21,7 @@ import { buildPacket, renderFindingsMarkdown } from "@/lib/frontier/packet";
 import type { PacketContextFile } from "@/lib/frontier/packet";
 import {
   buildResolutionReport,
-  parseChangedPaths,
+  parseFileChanges,
   renderResolutionMarkdown,
 } from "@/lib/frontier/resolution";
 import {
@@ -1013,17 +1013,18 @@ const attemptResolution = async (
   );
 
   const report: ResolutionReport = buildResolutionReport({
-    changedPaths: parseChangedPaths(diff),
+    changes: parseFileChanges(diff),
     findings: blockingFindings(state.findings ?? []),
     requiredCiGreen: ci.unknown ? false : ci.ok,
   });
 
+  // Re-entry guard on a stable key: the head SHA plus the yes/no verdict. The
+  // evidence text can change without the verdict changing (a transient CI
+  // message, a different path-match mode), and rewriting the check for that
+  // would post another comment and re-enter this function for nothing.
   const unchanged =
     state.resolutionSha === state.headSha &&
-    JSON.stringify(state.resolution) === JSON.stringify(report);
-
-  state.resolution = report;
-  state.resolutionSha = state.headSha;
+    state.resolutionResolved === report.resolved;
 
   emit(deps, "frontier.resolution", {
     addressed: report.entries.length - report.unresolved.length,
@@ -1033,10 +1034,8 @@ const attemptResolution = async (
     unresolved: report.unresolved.length,
   });
 
-  if (report.resolved) {
-    state.lifecycle = "resolved";
-
-    if (!unchanged) {
+  if (!unchanged) {
+    if (report.resolved) {
       await setCheck(deps, state, {
         conclusion: "success",
         details: `${renderResolutionMarkdown(report)}${findingsJson(
@@ -1044,7 +1043,7 @@ const attemptResolution = async (
         )}`,
         status: "completed",
         summary:
-          `Blocking findings resolved without a frontier call: ` +
+          "Blocking findings resolved without a frontier call: " +
           `${report.entries.length} finding(s) show a changed file and green required CI. ` +
           "This is a deterministic check, not a re-review.",
         title: "Frontier findings resolved (no re-review)",
@@ -1057,49 +1056,45 @@ const attemptResolution = async (
           "",
           renderResolutionMarkdown(report),
           "",
-          "Each blocking finding's file changed since the blocked review and required CI is green.",
+          "Each blocking finding's file changed at the flagged location and required CI is green.",
           "The paid review budget for this cycle stays spent; no new opinion was bought.",
           "",
-          "This is a deterministic resolution check, not a semantic re-review. If any finding",
-          "needed judgement rather than a testable fix, re-open it deliberately with",
-          "`frontier-new-cycle` or fix it by hand.",
+          "This is a deterministic resolution check, not a semantic re-review. A finding that",
+          "needed judgement rather than a testable fix should be re-opened deliberately with",
+          "`frontier-new-cycle`.",
         ].join("\n")
       );
+    } else {
+      await setCheck(deps, state, {
+        conclusion: "failure",
+        details: renderResolutionMarkdown(report),
+        status: "completed",
+        summary:
+          `Blocked: ${report.unresolved.length} of ${report.entries.length} finding(s) not yet ` +
+          `deterministically resolved${ci.unknown ? ` (${ci.unknown})` : ""}. ` +
+          "Push a repair that changes each flagged file at the flagged line; required CI must be green.",
+        title: "Frontier final review blocked",
+      });
     }
-
-    return {
-      calls: 0,
-      costUsd: 0,
-      cycleId: state.cycleId,
-      detail: "blocking findings resolved deterministically",
-      reviewCount: state.reviewCount,
-      status: "resolved",
-    };
   }
 
-  state.lifecycle = "blocked";
-
-  if (!unchanged) {
-    await setCheck(deps, state, {
-      conclusion: "failure",
-      details: renderResolutionMarkdown(report),
-      status: "completed",
-      summary:
-        `Blocked: ${report.unresolved.length} of ${report.entries.length} finding(s) not yet ` +
-        `deterministically resolved${
-          ci.unknown ? ` (${ci.unknown})` : ""
-        }. Push a repair that changes each flagged file; required CI must be green.`,
-      title: "Frontier final review blocked",
-    });
-  }
+  // State is written only after the GitHub writes succeed, so a failed check
+  // write cannot leave durable state claiming a resolution that was never
+  // posted. A retry re-runs the pass and converges on the same verdict.
+  state.lifecycle = report.resolved ? "resolved" : "blocked";
+  state.resolution = report;
+  state.resolutionResolved = report.resolved;
+  state.resolutionSha = state.headSha;
 
   return {
     calls: 0,
     costUsd: 0,
     cycleId: state.cycleId,
-    detail: "resolution incomplete",
+    detail: report.resolved
+      ? "blocking findings resolved deterministically"
+      : "resolution incomplete",
     reviewCount: state.reviewCount,
-    status: "blocked",
+    status: report.resolved ? "resolved" : "blocked",
   };
 };
 

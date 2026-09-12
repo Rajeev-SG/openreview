@@ -112,6 +112,8 @@ export interface FrontierPrState {
   prNumber: number;
   /** Last deterministic resolution pass, if the cycle blocked. */
   resolution?: ResolutionReport;
+  /** Whether the last resolution pass reported every finding addressed. */
+  resolutionResolved?: boolean;
   /** Head SHA the last resolution pass ran against, to avoid repeating it. */
   resolutionSha?: string;
   repo: string;
