@@ -25,7 +25,7 @@
     "@vercel/analytics": "^1.6.1",
     "@vercel/sandbox": "^1.7.1",
     "@vercel/speed-insights": "^1.3.1",
-    "@workflow/ai": "^4.0.1-beta.54",
+    "@workflow/ai": "4.2.1",
     "ai": "^6.0.105",
     "chat": "^4.15.0",
     "class-variance-authority": "^0.7.1",
@@ -39,7 +39,7 @@
     "server-only": "^0.0.1",
     "streamdown": "^2.4.0",
     "tailwind-merge": "^3.5.0",
-    "workflow": "4.1.0-beta.56",
+    "workflow": "4.8.8",
     "yaml": "^2.8.1",
     "zod": "^4.3.6"
   },
