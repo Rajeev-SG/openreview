@@ -50,6 +50,22 @@ const REVIEW_SIGNALS: Signal[] = [
     weight: 5,
   },
   {
+    detail: "tests / verifier logic added or changed",
+    patterns: [
+      "**/*.test.*",
+      "**/*.spec.*",
+      "**/*_test.*",
+      "**/test_*",
+      "**/__tests__/**",
+      "**/test/**",
+      "**/tests/**",
+      "**/spec/**",
+      "**/conftest.py",
+    ],
+    signal: "tests_verifier_logic",
+    weight: 5,
+  },
+  {
     detail: "benchmark / evaluator / scorer / verifier logic",
     patterns: [
       "**/benchmark*/**",

@@ -74,6 +74,21 @@ describe("evaluateGate", () => {
     ).toBe(true);
   });
 
+  test("a test-only change is reviewed as verifier logic", () => {
+    const decision = evaluateGate({
+      config,
+      files: [file("tests/symphony-gh-guard.test.ts")],
+      labels: [],
+    });
+
+    expect(decision.mode).toBe("review");
+    expect(
+      decision.reasons.some(
+        (reason) => reason.signal === "tests_verifier_logic"
+      )
+    ).toBe(true);
+  });
+
   test("runtime code with a matching test does not add the missing-test signal", () => {
     const decision = evaluateGate({
       config,
