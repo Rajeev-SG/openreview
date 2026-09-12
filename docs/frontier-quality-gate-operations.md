@@ -10,13 +10,13 @@ scratch, and the traps that cost real time.
 | -------------------- | --------------------------------------------------------------------------------- |
 | Vercel project       | `rajeevgills-projects/openreview-openrouter` (`prj_TVFq09iFUYBIsQeK0CXXF57LYGZJ`) |
 | Production URL       | https://openreview-openrouter.vercel.app                                          |
-| Production branch    | `openrouter-vercel`                                                               |
+| Production branch    | `main` (Git-linked; merges to `main` deploy production automatically)             |
 | Durable state        | Upstash for Redis, resource `openreview-frontier-state`, exposed as `REDIS_URL`   |
 | GitHub App           | `openreview-property-search` (App ID `3141537`)                                   |
 | Installation         | `117789216`, fixed installation (not multi-tenant)                                |
-| Installed on         | `Rajeev-SG/property-search` — `repository_selection: selected`                    |
+| Installed on         | **all** repositories of the `Rajeev-SG` account (`repository_selection: all`)     |
 | Judge model          | `z-ai/glm-5.3`                                                                    |
-| Measured review cost | ~$0.015 (6.9k in / 1.4k out)                                                      |
+| Measured review cost | $0.010-$0.017 per review on `z-ai/glm-5.3` (11.5-11.8k in / 0.2-1.5k out)         |
 
 ## Setup, in order
 
@@ -36,6 +36,12 @@ scratch, and the traps that cost real time.
    `FRONTIER_REQUIRED_CHECKS`. Otherwise CI gating is a no-op: the gate waits
    for required checks, and a repository with none configured has nothing to
    wait for.
+   - On a **private** repository on the GitHub Free plan, branch protection and
+     rulesets are unavailable, so `frontier-quality` cannot be made required and
+     the App's branch-protection read returns `403`. The gate then skips with
+     `neutral` and spends nothing. Set `FRONTIER_REQUIRED_CHECKS` to gate private
+     repositories anyway, and treat the Codex-side rule (plus the local
+     `pre-push` hook) as the merge gate, because GitHub will not enforce one.
 8. **Verify** with the recipe below.
 
 ## Environment variables
@@ -194,8 +200,26 @@ deployed app's verification disagree and every delivery `401`s.
 
 ### Deploying
 
-`vercel --prod --yes` from the repo root. Verify the alias actually moved
-(`Aliased: https://…`) before trusting the deployment.
+The project is **Git-linked** to `Rajeev-SG/openreview` with `main` as the
+production branch, so merging to `main` deploys production automatically. Do not
+assume a merge deployed it though - confirm on the deployment list (a Git
+deployment is attributed to the commit, not to your username):
+
+```bash
+vercel ls openreview-openrouter | head -5
+```
+
+A manual `vercel --prod --yes` from the repo root still works and is the
+fallback when the Git link is missing or a webhook is dropped. Verify the alias
+moved (`Aliased: https://…`) before trusting the deployment.
+
+Re-link if it is ever lost (connecting requires the Vercel GitHub App on the
+repo):
+
+```bash
+vercel git connect https://github.com/Rajeev-SG/openreview.git
+vercel git --help   # connect / disconnect
+```
 
 ## Verification
 
