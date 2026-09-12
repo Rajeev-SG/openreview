@@ -275,3 +275,25 @@ export const labelEvent = (
     label,
     ...overrides,
   });
+
+/**
+ * Wraps an async function so the first call rejects and later calls delegate.
+ * Used to prove a retried event is not written off as a duplicate.
+ */
+export const failFirstAttempt = <T, R>(
+  inner: (input: T) => Promise<R>
+): { calls: () => number; fn: (input: T) => Promise<R> } => {
+  let calls = 0;
+
+  const fn = async (input: T): Promise<R> => {
+    calls += 1;
+
+    if (calls === 1) {
+      throw new Error("transient failure");
+    }
+
+    return await inner(input);
+  };
+
+  return { calls: () => calls, fn };
+};

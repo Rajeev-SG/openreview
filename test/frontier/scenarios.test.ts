@@ -11,6 +11,7 @@ import type { FrontierReview } from "@/lib/frontier/types";
 import {
   createHarness,
   DEFAULT_USAGE,
+  failFirstAttempt,
   finding,
   HARNESS_NOW,
   labelEvent,
@@ -188,6 +189,30 @@ describe("scenario F — explicit new cycle", () => {
 });
 
 describe("scenario G — duplicate webhook", () => {
+  test("a delivery that fails is not marked done, so a retry can finish it", async () => {
+    const harness = createHarness({ reviews: [clean] });
+    const flaky = failFirstAttempt(harness.deps.github.setFrontierCheck);
+    const deps = {
+      ...harness.deps,
+      github: { ...harness.deps.github, setFrontierCheck: flaky.fn },
+    };
+
+    const event = pullRequestEvent({ deliveryId: "delivery-retry-1" });
+
+    await expect(handleFrontierEvent(deps, event)).rejects.toThrow();
+    expect(flaky.calls()).toBe(1);
+
+    // The retry is not written off as a duplicate, and it completes the event.
+    const retry = await handleFrontierEvent(deps, event);
+
+    expect(retry.status).toBe("passed");
+    const marker = await harness.kv.get<number>(
+      "frontier:delivery:delivery-retry-1"
+    );
+
+    expect(marker).toBe(1);
+  });
+
   test("a replayed delivery is deduplicated", async () => {
     const harness = createHarness({ reviews: [clean] });
     const event = pullRequestEvent({ deliveryId: "delivery-fixed-1" });
