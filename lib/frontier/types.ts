@@ -46,6 +46,7 @@ export type FrontierLifecycle =
   | "waiting_final_signal"
   | "passed"
   | "blocked"
+  | "resolved"
   | "needs_manual_review"
   | "budget_exhausted";
 
@@ -75,6 +76,25 @@ export interface FrontierReviewRecord {
   verdict: "pass" | "changes_required";
 }
 
+/**
+ * One row of the deterministic resolution map produced after a blocked cycle.
+ * `addressed` means the finding's file changed and required CI is green; it is
+ * not a re-review.
+ */
+export interface ResolutionEntry {
+  evidence: string;
+  id: string;
+  path?: string;
+  severity: FrontierSeverity;
+  status: "addressed" | "unresolved";
+}
+
+export interface ResolutionReport {
+  entries: ResolutionEntry[];
+  resolved: boolean;
+  unresolved: ResolutionEntry[];
+}
+
 export interface FrontierPrState {
   baselineSha?: string;
   checkRunId?: number;
@@ -90,6 +110,12 @@ export interface FrontierPrState {
   lifecycle: FrontierLifecycle;
   packetHashes: string[];
   prNumber: number;
+  /** Last deterministic resolution pass, if the cycle blocked. */
+  resolution?: ResolutionReport;
+  /** Whether the last resolution pass reported every finding addressed. */
+  resolutionResolved?: boolean;
+  /** Head SHA the last resolution pass ran against, to avoid repeating it. */
+  resolutionSha?: string;
   repo: string;
   reviewCount: number;
   reviews: FrontierReviewRecord[];

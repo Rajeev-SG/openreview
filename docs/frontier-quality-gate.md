@@ -14,6 +14,7 @@ PR
 → explicit `frontier-ready-final` label
 → delta-only frontier review #2
 → PASS or BLOCK
+→ after BLOCK: repair push, then free deterministic resolution (0 model calls)
 ```
 
 **Hard invariant: at most two paid frontier calls per review cycle.** No code
@@ -163,12 +164,12 @@ type FrontierFinding = {
 | `frontier-ready-final` | arm and run the single delta review #2                      |
 | `frontier-new-cycle`   | after a blocked cycle, explicitly start a new bounded cycle |
 
-| `frontier-quality` conclusion | Meaning                                                    |
-| ----------------------------- | ---------------------------------------------------------- |
-| success                       | skipped (low value), or a review passed                    |
-| action_required               | findings to fix, budget exhausted, or manual review needed |
-| neutral                       | required CI failing; nothing was spent                     |
-| failure                       | review #2 left blocking P0/P1/P2 findings                  |
+| `frontier-quality` conclusion | Meaning                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| success                       | skipped (low value), a review passed, or a BLOCK later resolved for free |
+| action_required               | findings to fix, budget exhausted, or manual review needed               |
+| neutral                       | required CI failing; nothing was spent                                   |
+| failure                       | review #2 left blocking P0/P1/P2 findings                                |
 
 ## 7. Durable state is required
 
@@ -294,9 +295,59 @@ guard, response parsing, request pinning, webhook routing (including manual
 | H required CI failure       | 0 calls; resumes when CI goes green               |
 | I optional check pending    | review still proceeds                             |
 | J budget exhausted          | fails before the request, 0 calls                 |
+| K BLOCK then repair         | free resolution, 0 calls, check clears            |
+| L BLOCK then no-op repair   | stays blocked, 0 calls                            |
+
+## 12 After a BLOCK: free deterministic resolution
+
+A cycle buys at most two paid reviews, so once review #2 BLOCKs the PR cannot
+buy a third. Leaving a required check red forever would strand the work, so the
+gate verifies the **repair** deterministically instead - still with **0 model
+calls**:
+
+1. The blocked cycle records the reviewed SHA and the blocking findings.
+2. A repair push is compared against that SHA (`compare/{base}...{head}`).
+3. Every blocking finding must name a file that appears in the repair delta.
+   Paths come from model output, so a leading `./` and an unambiguous wrong
+   directory prefix are tolerated; the match mode is shown in the evidence.
+4. When the finding names a `line`, a changed hunk must actually cover that
+   line - touching the file elsewhere is not a repair.
+5. Deleting the flagged file is never a repair.
+6. The repository's required CI must be green (the `frontier-quality` check
+   itself is excluded, as always).
+
+If all of these hold, `frontier-quality` is written as **success** and the PR can
+merge; the gate posts the resolution map as the audit trail. Otherwise the check
+stays **failure**, and its output lists exactly which findings are unresolved
+and why.
+
+```
+| Finding | Severity | File | Status | Evidence |
+| F1 | P1 | `lib/model.ts` | addressed | `lib/model.ts` changed and required CI is green |
+| F2 | P0 | - | unresolved | no file path; not deterministically verifiable |
+```
+
+What this does and does not prove: it proves the flagged file changed at the
+flagged location and that CI passed. It is **not** a semantic re-review - that
+was review #2's job, and the resolution pass deliberately never substitutes for
+one. A finding that names no file (an architectural or judgement finding), one
+whose stale `line` no longer matches the change, or a repair that only deletes
+the file, can never be auto-resolved: the PR stays blocked and the operator
+decides whether to fix it by hand or buy a new cycle with `frontier-new-cycle`.
+
+The pass is idempotent on a stable key - the head SHA plus the yes/no verdict -
+so a re-entering `check_run` event (every check write produces one) cannot loop,
+and evidence wording that changes without changing the verdict does not rewrite
+the check or post a second comment. Durable state is updated only after the
+GitHub writes succeed, so a failed write cannot leave state claiming a
+resolution that was never posted.
 
 ## Not yet covered
 
+- semantic verification of a repair after a BLOCK (resolution is deterministic:
+  file changed + CI green, not a re-review)
+- a _passed_ cycle that receives a further push is not re-verified; the new SHA
+  has no `frontier-quality` run until a new cycle is started
 - automatic PASS_WITH_BACKLOG issue creation, and P2/P3 backlog deduplication
 - dashboards and ROI analytics beyond the recorded spend ledgers
 - semantic packet retrieval, and holistic "primary user journey changed"
