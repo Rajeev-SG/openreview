@@ -1,6 +1,7 @@
 import "server-only";
 import type { Octokit } from "octokit";
 
+import { withoutSelfCheck } from "@/lib/frontier/checks";
 import type { GateChangedFile } from "@/lib/frontier/gate";
 import type {
   CheckRunView,
@@ -231,7 +232,7 @@ export const createOctokitFrontierGitHub = (
     ): Promise<string[]> => {
       const override = requiredChecksOverride();
       if (override.length > 0) {
-        return override;
+        return withoutSelfCheck(override);
       }
 
       const { owner, repo: name } = split(repo);
@@ -246,7 +247,7 @@ export const createOctokitFrontierGitHub = (
         const contexts = data.contexts ?? [];
         const checks = (data.checks ?? []).map((check) => check.context);
 
-        return [...new Set([...contexts, ...checks])].filter(Boolean);
+        return withoutSelfCheck([...contexts, ...checks]);
       } catch (error) {
         const { status } = error as { status?: number };
         if (status === 404 || status === 403) {
