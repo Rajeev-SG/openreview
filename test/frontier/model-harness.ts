@@ -73,3 +73,65 @@ export const alwaysFailingFetch = (
 
   return { attempts: () => calls, fetchImpl };
 };
+
+const BILLED = { completion_tokens: 20, cost: 0.004, prompt_tokens: 1000 };
+
+/** Returns a billed but unusable payload first, then a valid review. */
+export const badPayloadThenValidFetch = (): {
+  attempts: () => number;
+  fetchImpl: typeof fetch;
+} => {
+  let calls = 0;
+
+  const fetchImpl = (async () => {
+    await yieldMicrotask();
+    calls += 1;
+
+    if (calls === 1) {
+      return Response.json({
+        choices: [{ message: { content: "not json at all" } }],
+        usage: BILLED,
+      });
+    }
+
+    return Response.json({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              findings: [],
+              summary: "ok",
+              verdict: "pass",
+            }),
+          },
+        },
+      ],
+      usage: BILLED,
+    });
+  }) as unknown as typeof fetch;
+
+  return { attempts: () => calls, fetchImpl };
+};
+
+/** Every attempt is billed but unusable. */
+export const alwaysBadPayloadFetch = (
+  attemptsAllowed = 2
+): { attempts: () => number; fetchImpl: typeof fetch } => {
+  let calls = 0;
+
+  const fetchImpl = (async () => {
+    await yieldMicrotask();
+    calls += 1;
+
+    if (calls > attemptsAllowed) {
+      return new Response("stop", { status: 500 });
+    }
+
+    return Response.json({
+      choices: [{ message: { content: "still not json" } }],
+      usage: BILLED,
+    });
+  }) as unknown as typeof fetch;
+
+  return { attempts: () => calls, fetchImpl };
+};
