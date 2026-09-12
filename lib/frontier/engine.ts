@@ -991,6 +991,44 @@ export const handleFrontierEvent = async (
 ): Promise<FrontierOutcome> => {
   const now = nowOf(deps);
 
+  // Durable state is checked before any store access: on an ephemeral store the
+  // adapter may not even be connected, and every spend invariant depends on
+  // state outliving the invocation.
+  if (!deps.isDurableState) {
+    emit(deps, "frontier.no_durable_state", {
+      prNumber: event.prNumber,
+      repo: event.repo,
+    });
+
+    try {
+      await deps.github.setFrontierCheck({
+        conclusion: "neutral",
+        headSha: event.headSha ?? "",
+        name: FRONTIER_CHECK_NAME,
+        prNumber: event.prNumber,
+        repo: event.repo,
+        status: "completed",
+        summary:
+          "Frontier review disabled: durable state (REDIS_URL) is not configured. " +
+          "The per-cycle review limit, paid-call idempotency and daily/monthly " +
+          "budgets cannot be enforced on an ephemeral store, so no frontier " +
+          "tokens were spent.",
+        title: "Frontier review needs durable state",
+      });
+    } catch {
+      // Reporting is best-effort; the important part is that nothing was spent.
+    }
+
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: 0,
+      detail: "durable state not configured",
+      reviewCount: 0,
+      status: "needs_durable_state",
+    };
+  }
+
   if (event.deliveryId) {
     const seen = await deps.kv.get(deliveryKey(event.deliveryId));
     if (seen) {
@@ -1032,49 +1070,6 @@ export const handleFrontierEvent = async (
         status: "locked",
       };
     }
-  }
-
-  if (!deps.isDurableState) {
-    const state =
-      (await loadPrState(deps.kv, event.repo, event.prNumber)) ??
-      createInitialState({
-        headSha: event.headSha ?? "",
-        now,
-        prNumber: event.prNumber,
-        repo: event.repo,
-      });
-
-    state.lifecycle = "needs_manual_review";
-    emit(deps, "frontier.no_durable_state", {
-      prNumber: event.prNumber,
-      repo: event.repo,
-    });
-
-    try {
-      await setCheck(deps, state, {
-        conclusion: "neutral",
-        status: "completed",
-        summary:
-          "Frontier review disabled: durable state (REDIS_URL) is not configured. " +
-          "The per-cycle review limit, paid-call idempotency and daily/monthly " +
-          "budgets cannot be enforced on an ephemeral store, so no frontier " +
-          "tokens were spent.",
-        title: "Frontier review needs durable state",
-      });
-    } catch {
-      // Reporting is best-effort; the important part is that nothing was spent.
-    }
-
-    await savePrState(deps.kv, state, now);
-
-    return {
-      calls: 0,
-      costUsd: 0,
-      cycleId: state.cycleId,
-      detail: "durable state not configured",
-      reviewCount: state.reviewCount,
-      status: "needs_durable_state",
-    };
   }
 
   try {
