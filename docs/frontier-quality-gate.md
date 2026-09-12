@@ -127,7 +127,7 @@ unrepresentative.
 One direct, non-streaming OpenRouter call:
 
 ```
-model:      openai/gpt-6-astra
+model:      z-ai/glm-5.3
 reasoning:  { effort: "low", exclude: true }
 provider:   { require_parameters: true }
 max_tokens: 3000
@@ -184,10 +184,10 @@ FRONTIER_MAX_PACKET_CHARS=50000
 FRONTIER_DAILY_BUDGET_USD=5
 FRONTIER_MONTHLY_BUDGET_USD=50
 FRONTIER_MAX_CALL_USD=0.5            (floor for the per-review reservation, > 0)
-FRONTIER_INPUT_USD_PER_MTOK=13       (judge model input price)
-FRONTIER_OUTPUT_USD_PER_MTOK=50      (judge model output price)
+FRONTIER_INPUT_USD_PER_MTOK=1.4      (judge model input price)
+FRONTIER_OUTPUT_USD_PER_MTOK=4.4     (judge model output price)
 FRONTIER_ENABLED=true
-FRONTIER_MODEL=openai/gpt-6-astra
+FRONTIER_MODEL=z-ai/glm-5.3
 FRONTIER_REQUIRED_CHECKS=            (optional override, comma separated)
 ```
 
@@ -203,13 +203,11 @@ tokens (`FRONTIER_*_USD_PER_MTOK`), plus a system-prompt allowance, so it scales
 with the caps that actually determine the billable size of a request.
 `FRONTIER_MAX_CALL_USD` is a floor an operator can raise.
 
-At the default caps and prices this reservation is about **$2.78** per review
-against an observed real cost of roughly $0.16, because it bounds the worst case
-rather than the expected case. Keep `FRONTIER_DAILY_BUDGET_USD` comfortably
-above it (at least ~4x, so ~$12) or shrink the bound by lowering
-`FRONTIER_MAX_PACKET_CHARS` / `FRONTIER_MAX_OUTPUT_TOKENS` / the price settings,
-otherwise the guard will start refusing reviews well before the nominal daily
-ceiling is reached.
+At the default caps and prices the derived reservation is ~$0.30, so the
+`FRONTIER_MAX_CALL_USD` floor of $0.50 governs, against an observed real cost of
+roughly $0.02-0.03 per review on `z-ai/glm-5.3`. The reservation bounds the
+worst case rather than the expected case, so keep the daily ceiling comfortably
+above it.
 
 A token can never be shorter than one byte, and one character is at most four
 UTF-8 bytes, so the input estimate reserves four bytes per permitted character.

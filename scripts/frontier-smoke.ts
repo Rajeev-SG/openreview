@@ -422,10 +422,10 @@ const main = async (): Promise<void> => {
   const deps: FrontierEngineDeps = {
     budget: {
       dailyUsd: 5,
-      inputUsdPerMTok: 13,
+      inputUsdPerMTok: 1.4,
       maxCallUsd: MAX_CALL_USD,
       monthlyUsd: 50,
-      outputUsdPerMTok: 50,
+      outputUsdPerMTok: 4.4,
     },
     github,
     kv,

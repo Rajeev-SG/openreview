@@ -109,7 +109,7 @@ Add the following environment variables to your Vercel project:
 | `GITHUB_APP_WEBHOOK_SECRET`   | The webhook secret you configured                                                            |
 | `REDIS_URL`                   | (Optional) Redis URL for persistent state, falls back to in-memory                           |
 | `FRONTIER_ENABLED`            | (Optional) Set to `false` to disable the automatic frontier quality gate. Default `true`     |
-| `FRONTIER_MODEL`              | (Optional) Frontier judge model. Default `openai/gpt-6-astra`                                |
+| `FRONTIER_MODEL`              | (Optional) Frontier judge model. Default `z-ai/glm-5.3`                                      |
 | `FRONTIER_DAILY_BUDGET_USD`   | (Optional) Daily frontier spend ceiling. Default `5`                                         |
 | `FRONTIER_MONTHLY_BUDGET_USD` | (Optional) Monthly frontier spend ceiling. Default `50`                                      |
 | `FRONTIER_REQUIRED_CHECKS`    | (Optional) Comma-separated required checks, used instead of branch protection                |

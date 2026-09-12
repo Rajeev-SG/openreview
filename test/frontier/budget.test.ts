@@ -14,10 +14,10 @@ import type { FrontierKv } from "@/lib/frontier/store";
 const now = new Date("2026-09-12T12:00:00.000Z");
 const limits = {
   dailyUsd: 100,
-  inputUsdPerMTok: 13,
+  inputUsdPerMTok: 1.4,
   maxCallUsd: 0.5,
   monthlyUsd: 1000,
-  outputUsdPerMTok: 50,
+  outputUsdPerMTok: 4.4,
 };
 
 interface Ledger {
@@ -52,10 +52,10 @@ describe("deriveReservationUsd", () => {
   test("derives the bound from the packet and output caps", () => {
     const derived = deriveReservationUsd(
       {
-        inputUsdPerMTok: 13,
+        inputUsdPerMTok: 1.4,
         maxOutputTokens: 3000,
         maxPacketChars: 50_000,
-        outputUsdPerMTok: 50,
+        outputUsdPerMTok: 4.4,
       },
       0
     );
@@ -63,7 +63,7 @@ describe("deriveReservationUsd", () => {
     // Worst case: four UTF-8 bytes per permitted character, plus the system
     // prompt allowance, plus the full output cap.
     expect(derived).toBeCloseTo(
-      ((50_000 * 4 + 2000) * 13 + 3000 * 50) / 1_000_000,
+      ((50_000 * 4 + 2000) * 1.4 + 3000 * 4.4) / 1_000_000,
       6
     );
   });
@@ -100,19 +100,19 @@ describe("deriveReservationUsd", () => {
   test("grows with the caps", () => {
     const small = deriveReservationUsd(
       {
-        inputUsdPerMTok: 13,
+        inputUsdPerMTok: 1.4,
         maxOutputTokens: 100,
         maxPacketChars: 1000,
-        outputUsdPerMTok: 50,
+        outputUsdPerMTok: 4.4,
       },
       0
     );
     const large = deriveReservationUsd(
       {
-        inputUsdPerMTok: 13,
+        inputUsdPerMTok: 1.4,
         maxOutputTokens: 3000,
         maxPacketChars: 50_000,
-        outputUsdPerMTok: 50,
+        outputUsdPerMTok: 4.4,
       },
       0
     );

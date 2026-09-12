@@ -102,7 +102,7 @@ describe("createOpenRouterFrontierModel", () => {
     });
 
     const { payload } = request();
-    expect(payload.model).toBe("openai/gpt-6-astra");
+    expect(payload.model).toBe("z-ai/glm-5.3");
     expect(payload.max_tokens).toBe(3000);
     expect(payload.tools).toBeUndefined();
     expect(payload.reasoning).toEqual({ effort: "low", exclude: true });
@@ -115,7 +115,7 @@ describe("createOpenRouterFrontierModel", () => {
     expect(result.usage).toEqual({
       costUsd: 0.0125,
       inputTokens: 4200,
-      model: "openai/gpt-6-astra",
+      model: "z-ai/glm-5.3",
       outputTokens: 640,
     });
   });

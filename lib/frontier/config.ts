@@ -24,17 +24,17 @@ const DEFAULT_MONTHLY_BUDGET_USD = 50;
 /**
  * Conservative upper bound reserved for a single review before it runs, so the
  * ceilings are hard bounds. Deliberately above the observed cost of one
- * gpt-6-astra call at the default packet and output caps.
+ * glm-5.3 call at the default packet and output caps.
  */
 const DEFAULT_MAX_CALL_USD = 0.5;
 /**
  * Price of the judge model per million tokens. Used to derive the per-review
  * reservation from the configured packet and output caps, so the reservation
  * scales with those caps instead of being a magic constant. Defaults match
- * openai/gpt-6-astra, rounded up.
+ * z-ai/glm-5.3 (the highest-capability GLM 5.3 tier), rounded up.
  */
-const DEFAULT_INPUT_USD_PER_MTOK = 13;
-const DEFAULT_OUTPUT_USD_PER_MTOK = 50;
+const DEFAULT_INPUT_USD_PER_MTOK = 1.4;
+const DEFAULT_OUTPUT_USD_PER_MTOK = 4.4;
 
 const readNumber = (
   raw: string | undefined,
@@ -143,7 +143,12 @@ export const readFrontierBudget = (
   ),
 });
 
-export const FRONTIER_MODEL = "openai/gpt-6-astra";
+/**
+ * Frontier judge model. z-ai/glm-5.3 is the highest-capability GLM 5.3 tier;
+ * it supports structured outputs, reasoning and max_tokens under
+ * `require_parameters`, at roughly a tenth of the previous astra price.
+ */
+export const FRONTIER_MODEL = "z-ai/glm-5.3";
 export const FRONTIER_REASONING_EFFORT = "low";
 
 export const readFrontierModel = (source: EnvLike = process.env): string => {

@@ -112,7 +112,7 @@ export interface FakeModel {
 export const DEFAULT_USAGE = {
   costUsd: 0.0125,
   inputTokens: 4200,
-  model: "openai/gpt-6-astra",
+  model: "z-ai/glm-5.3",
   outputTokens: 640,
 };
 
@@ -221,10 +221,10 @@ export const createHarness = (input?: {
     deps: {
       budget: input?.budget ?? {
         dailyUsd: 5,
-        inputUsdPerMTok: 13,
+        inputUsdPerMTok: 1.4,
         maxCallUsd: 0.5,
         monthlyUsd: 50,
-        outputUsdPerMTok: 50,
+        outputUsdPerMTok: 4.4,
       },
       github: fakeGitHub.github,
       kv,

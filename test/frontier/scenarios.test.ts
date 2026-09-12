@@ -265,10 +265,10 @@ describe("scenario J — budget exhausted", () => {
     const harness = createHarness({
       budget: {
         dailyUsd: 5,
-        inputUsdPerMTok: 13,
+        inputUsdPerMTok: 1.4,
         maxCallUsd: 0.5,
         monthlyUsd: 50,
-        outputUsdPerMTok: 50,
+        outputUsdPerMTok: 4.4,
       },
     });
     await harness.kv.set(dayKey(HARNESS_NOW), {
@@ -361,7 +361,7 @@ describe("budget reservation", () => {
     const harness = createHarness({
       budget: {
         dailyUsd: 3,
-        inputUsdPerMTok: 13,
+        inputUsdPerMTok: 1.4,
         maxCallUsd: 0.5,
         monthlyUsd: 50,
         outputUsdPerMTok: 1000,
