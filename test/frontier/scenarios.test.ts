@@ -723,3 +723,53 @@ describe("every surface that publishes the model's summary", () => {
     expect(comment).not.toContain("## Frontier review\n\n...");
   });
 });
+
+describe("a spent review budget must still leave a check on the head", () => {
+  test("a push after the budget is spent produces a terminal check, not silence", async () => {
+    // The deadlock: `settled()` creates no check run, so a push arriving after
+    // the cycle's two reviews produced no `frontier-quality` check at all. On a
+    // repository that requires that check, the PR became permanently
+    // unmergeable - no further review would ever run to satisfy it.
+    const harness = createHarness({ reviews: [clean, clean] });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+    await pushRepair(harness, "head0002");
+    await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    const updatesBefore = harness.fakeGitHub.checkUpdates.length;
+
+    // A further push, with the cycle's budget now exhausted.
+    await pushRepair(harness, "head0003");
+
+    const after = harness.fakeGitHub.checkUpdates.slice(updatesBefore);
+    expect(after.length).toBeGreaterThan(0);
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.status).toBe("completed");
+    expect(last?.conclusion).toBe("success");
+    expect(last?.details).toContain("budget");
+  });
+
+  test("a spent budget over outstanding findings does not report success", async () => {
+    // The same contract must not become a way to launder a blocked cycle green.
+    const harness = createHarness({
+      reviews: [changesRequired(), changesRequired([finding({ id: "F2" })])],
+    });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+    await pushRepair(harness, "head0002");
+    await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    await pushRepair(harness, "head0003");
+
+    // A blocked cycle takes the deterministic resolution path, which reports
+    // failure; a blocked budget-spent cycle reports action_required. Either is
+    // correct. What must never happen is a success.
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.status).toBe("completed");
+    expect(["failure", "action_required"]).toContain(String(last?.conclusion));
+  });
+});

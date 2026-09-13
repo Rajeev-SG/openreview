@@ -1209,7 +1209,7 @@ const attemptResolution = async (
   };
 };
 
-const evaluate = (
+const evaluate = async (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
   options: { forceReview?: boolean },
@@ -1234,6 +1234,28 @@ const evaluate = (
       repo: state.repo,
       reviewCount: state.reviewCount,
     });
+
+    // The required-check contract: every event must leave a terminal check on
+    // the head. Without this, a push arriving after the cycle's budget is spent
+    // produced NO check at all, and on a repository that requires
+    // `frontier-quality` the PR became permanently unmergeable - the required
+    // check could never be satisfied, because no further review would ever run.
+    // It reports the cycle's own outcome, so it cannot be mistaken for a fresh
+    // review that passed.
+    const spentPassed =
+      state.lifecycle === "passed" || state.lifecycle === "resolved";
+    await setCheck(deps, state, {
+      conclusion: spentPassed ? "success" : "action_required",
+      details: `${verdictLine(spentPassed ? "passed" : "blocked", 0, 0)}\n\nReview budget for this cycle is spent (${state.reviewCount} of ${deps.limits.maxReviewsPerCycle}). No further review will run until a new cycle is started.`,
+      status: "completed",
+      summary: spentPassed
+        ? `Review budget spent; the last review passed. Label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`
+        : `Review budget spent with findings outstanding. Fix them, then label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`,
+      title: spentPassed
+        ? "Frontier review passed (cycle complete)"
+        : "Frontier review: cycle complete with findings outstanding",
+    });
+
     return settled({
       calls: 0,
       costUsd: 0,
