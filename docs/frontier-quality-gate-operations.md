@@ -283,3 +283,64 @@ output tokens), against ~$0.16 on the previous `openai/gpt-6-astra` judge.
 Skipped PRs cost $0. The derived reservation is ~$0.30 at the default caps, so
 `FRONTIER_MAX_CALL_USD` (0.5) governs; spend is reconciled to the real cost after
 each call.
+
+## Audit — 2026-09-13: is the gate earning its keep?
+
+Prompted by a fair question: the gate spends real money per review, so "the
+check is green" is not by itself evidence of value. Counted from GitHub's
+check-run API across every PR in `codex-home`,
+`codex-session-orchestration-analysis` and `openreview`:
+
+|                                                                 |      count |
+| --------------------------------------------------------------- | ---------: |
+| Runs that called the model                                      |     **13** |
+| Runs that cost nothing (skipped / not required / CI unreadable) |     **45** |
+| Total spend to date                                             | **~$0.20** |
+
+### Cost per review, from first principles
+
+The judge is `z-ai/glm-5.3` via OpenRouter, priced at **$1.092/Mtok in /
+$3.432/Mtok out** (OpenRouter's public model list, retrieved 2026-09-13). A
+review sends ~11.5k in and 0.2–1.5k out, so **$0.013–$0.018** per review. The
+configured reservation prices ($1.4 / $4.4) are slightly conservative, which is
+the safe direction: the reservation is a ceiling, and the ledger settles to the
+real figure (`budget.ts` adjusts by `actualUsd - reservation.reserveUsd`).
+
+Bounds that apply: $0.50 reserved per review, at most 2 reviews per cycle, a
+$5/day and $50/month ceiling. Zero spend on docs/asset-only diffs (score < 5)
+and on repositories where required CI cannot be read.
+
+### Evidence it does real work
+
+The 2026-09-12 runs on this repository produced findings that are specific,
+correct and were acted on the same day:
+
+| Finding                                                                                   | What happened                                                                                    |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| P1 — "Returning `[]` on 403 still lets the review proceed ungated… fail closed"           | `8307293` _Fail closed when required CI cannot be read_, same day                                |
+| P3 — "behavioural branch added without any unit test covering 403 vs 404"                 | `test/frontier/octokit.test.ts` now asserts 404→`none` and 403→`unreadable`                      |
+| Blocked run — a `FRONTIER_REQUIRED_CHECKS` name that never reports parks the gate forever | `scenarios.test.ts`: _a required check that never reports > fails closed after the bounded wait_ |
+
+It caught a correctness defect in the code that decides its own behaviour, with
+file:line, impact, required fix and verification steps, and the loop closed.
+
+### Where it is weak — do not over-trust a green check
+
+1. **A pass could hide findings.** Findings attached to a `pass` verdict were
+   persisted but never rendered: the check carried only the summary text. On
+   `codex-session-orchestration-analysis#119` the review returned `verdict:
+pass` with a summary alleging a regression while the title read _Frontier
+   review passed_. Reading the title — the normal way to read a check — gave the
+   opposite of what the review said. Fixed by publishing the findings on the
+   check and saying how many there are in the title.
+2. **Summaries are sometimes unusable.** `summary_len: 3`, raw `"..."`. Three of
+   nine recent passing reviews reported `"..."`. Now replaced with a meaningful
+   fallback.
+3. **It can be confidently wrong.** The `#119` finding — that unknown-model
+   proxy rows default to the `codex-plan` bucket — does not reproduce; every
+   such row resolves to `unresolved`. Treat a finding as a claim to verify, not
+   a verdict.
+
+**Operating rule:** a green `frontier-quality` means "the judge was run and
+raised nothing blocking", not "this change was verified". Read the summary, and
+check any finding before acting on it.
