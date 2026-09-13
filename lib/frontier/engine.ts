@@ -1244,16 +1244,29 @@ const evaluate = async (
     // review that passed.
     const spentPassed =
       state.lifecycle === "passed" || state.lifecycle === "resolved";
+
+    // Report the cycle's OWN findings, not zeroes. This write REPLACES the
+    // check run, so hardcoding 0/0 both contradicted `verdict=blocked` and
+    // erased the findings the final review had just posted - a blocked PR read
+    // "blocking=0" and the findings survived only in the durable record.
+    const spentFindings = state.findings ?? [];
+    const spentBlocking = blockingFindings(spentFindings).length;
+    const spentAdvisory = spentFindings.length - spentBlocking;
+    const spentVerdict = spentPassed ? "passed" : "blocked";
+    const findingsBlock = spentFindings.length
+      ? `\n\n${renderFindingsMarkdown(spentFindings)}`
+      : "";
+
     await setCheck(deps, state, {
       conclusion: spentPassed ? "success" : "action_required",
-      details: `${verdictLine(spentPassed ? "passed" : "blocked", 0, 0)}\n\nReview budget for this cycle is spent (${state.reviewCount} of ${deps.limits.maxReviewsPerCycle}). No further review will run until a new cycle is started.`,
+      details: `${verdictLine(spentVerdict, spentBlocking, spentAdvisory)}\n\nReview budget for this cycle is spent (${state.reviewCount} of ${deps.limits.maxReviewsPerCycle}). No further review will run until a new cycle is started.${findingsBlock}`,
       status: "completed",
       summary: spentPassed
         ? `Review budget spent; the last review passed. Label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`
-        : `Review budget spent with findings outstanding. Fix them, then label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`,
+        : `Review budget spent with ${spentBlocking} blocking finding(s) outstanding. Fix them, then label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`,
       title: spentPassed
         ? "Frontier review passed (cycle complete)"
-        : "Frontier review: cycle complete with findings outstanding",
+        : `Frontier review: cycle complete with ${spentBlocking} blocking finding(s) outstanding`,
     });
 
     return settled({

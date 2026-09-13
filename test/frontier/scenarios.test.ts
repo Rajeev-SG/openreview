@@ -724,6 +724,38 @@ describe("every surface that publishes the model's summary", () => {
   });
 });
 
+describe("a spent budget must not erase the findings it is reporting", () => {
+  test("the cycle-complete check carries the real findings and counts", async () => {
+    // The write replaces the check run, so hardcoding 0/0 both contradicted
+    // `verdict=blocked` and erased what the final review had just posted.
+    const harness = createHarness({
+      reviews: [changesRequired(), changesRequired([finding({ id: "F2" })])],
+    });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+    await pushRepair(harness, "head0002");
+    await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    // A same-SHA event with the budget spent and no repair push to resolve -
+    // this is the path codex-home#81 hit, where the cycle-complete write
+    // replaced the final review's check.
+    await handleFrontierEvent(
+      harness.deps,
+      pullRequestEvent({ action: "synchronize", headSha: "head0002" })
+    );
+
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    const details = String(last?.details);
+    expect(details).toContain("verdict=blocked");
+    expect(details).toContain("blocking=1");
+    // The findings themselves must survive the rewrite.
+    expect(details).toContain("F2");
+    expect(String(last?.title)).toContain("1 blocking finding");
+  });
+});
+
 describe("a spent review budget must still leave a check on the head", () => {
   test("a push after the budget is spent produces a terminal check, not silence", async () => {
     // The deadlock: `settled()` creates no check run, so a push arriving after
