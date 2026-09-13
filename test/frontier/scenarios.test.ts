@@ -553,6 +553,90 @@ describe("a required check that never reports", () => {
 });
 
 describe("a passing verdict must not hide what the model reported", () => {
+  test("a pass carrying blocking findings is not reported as a green check", async () => {
+    // The exact shape of codex-home#65: verdict "pass", severity P1, check read
+    // as success, PR merged 85 seconds later with the finding outstanding.
+    // A blocking finding contradicts a pass verdict, and the final review
+    // already refuses a pass in that case, so neither may look mergeable.
+    const contradictory: FrontierReview = {
+      findings: [finding({ severity: "P1" })],
+      summary: "Passing, but the guard's core predicate over-triggers.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [contradictory] });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("waiting_final_signal");
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.conclusion).toBe("action_required");
+    expect(last?.title).toContain("blocking");
+    // F2 from the gate's own review: a title leading with "passed" tells a
+    // human the opposite of what the conclusion enforces.
+    expect(last?.title).not.toContain("passed");
+    // The machine-readable verdict is the contract external consumers use.
+    expect(last?.details).toContain("verdict=blocked");
+    expect(last?.details).toContain("blocking=1");
+  });
+
+  test("the contradictory-pass path completes: fix, final signal, delta review", async () => {
+    // F1/F4 from the gate's own review of this change: the new lifecycle was
+    // only asserted at the first conclusion, and a parked state that cannot
+    // re-review would be worse than the problem it replaces.
+    //
+    // This is a characterisation test, not a fail-first one: it passes against
+    // the previous engine too, because the parked state reuses the existing
+    // repair-then-signal flow rather than inventing one. It is here to pin that
+    // the flow is reachable, which is what F1 said was unproven.
+    const contradictory: FrontierReview = {
+      findings: [finding({ id: "F1", severity: "P1" })],
+      summary: "Passing, but the predicate over-triggers.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [contradictory, clean] });
+
+    const first = await handleFrontierEvent(harness.deps, pullRequestEvent());
+    expect(first.status).toBe("waiting_final_signal");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe(
+      "action_required"
+    );
+
+    // The finding is persisted on the engine state before the branch is chosen
+    // (`state.findings = response.review.findings`), and `buildDelta` reads it as
+    // `originalFindings`; the packet test "delta packet carries the original
+    // findings" pins that baseline. What was previously unproven is that the
+    // parked state can re-review at all, which is what the steps below show.
+
+    // A repair push alone stays free, exactly as in the changes_required path.
+    await pushRepair(harness, "head0002");
+    expect(harness.model.calls).toHaveLength(1);
+
+    // The final signal must actually re-review and clear.
+    const final = await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    expect(harness.model.calls).toHaveLength(2);
+    expect(final.status).toBe("passed");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
+  });
+
+  test("an advisory-only pass still reports success", async () => {
+    const advisoryOnly: FrontierReview = {
+      findings: [finding({ id: "F9", severity: "P3" })],
+      summary: "Nit: naming.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [advisoryOnly] });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.conclusion).toBe("success");
+    expect(last?.title).toContain("advisory");
+  });
+
   test("findings attached to a pass are published on the check", async () => {
     // Observed live: a review returned verdict "pass" with a summary alleging a
     // regression, and the check title said "Frontier review passed". Findings
@@ -568,9 +652,11 @@ describe("a passing verdict must not hide what the model reported", () => {
 
     const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
 
-    expect(outcome.status).toBe("passed");
+    expect(outcome.status).toBe("waiting_final_signal");
     const last = harness.fakeGitHub.checkUpdates.at(-1);
-    expect(last?.conclusion).toBe("success");
+    // P1 is blocking, so the conclusion is action_required (see the dedicated
+    // test above); what matters here is that the finding is published at all.
+    expect(last?.conclusion).toBe("action_required");
     expect(last?.details).toContain("F1");
     // The fixture finding is P1, so the label must say "blocking": the first
     // review passes on the verdict alone while the final review refuses a pass
@@ -590,14 +676,19 @@ describe("a passing verdict must not hide what the model reported", () => {
     );
   });
 
-  test("a clean pass keeps the plain title and no details", async () => {
+  test("a clean pass keeps the plain title and carries only the verdict line", async () => {
     const harness = createHarness({ reviews: [clean] });
 
     await handleFrontierEvent(harness.deps, pullRequestEvent());
 
     const last = harness.fakeGitHub.checkUpdates.at(-1);
     expect(last?.title).toBe("Frontier review passed");
-    expect(last?.details).toBeUndefined();
+    // No findings to render, but the machine-readable verdict is always present
+    // so an external consumer never has to parse the title.
+    expect(last?.details).toContain("schema=frontier-verdict/v1");
+    expect(last?.details).toContain("verdict=passed");
+    expect(last?.details).toContain("blocking=0");
+    expect(last?.details).not.toContain("####");
   });
 
   test("an unusable summary never reaches the check summary", async () => {
@@ -630,5 +721,55 @@ describe("every surface that publishes the model's summary", () => {
     expect(comment).toBeDefined();
     expect(comment).toContain("_No summary provided._");
     expect(comment).not.toContain("## Frontier review\n\n...");
+  });
+});
+
+describe("a spent review budget must still leave a check on the head", () => {
+  test("a push after the budget is spent produces a terminal check, not silence", async () => {
+    // The deadlock: `settled()` creates no check run, so a push arriving after
+    // the cycle's two reviews produced no `frontier-quality` check at all. On a
+    // repository that requires that check, the PR became permanently
+    // unmergeable - no further review would ever run to satisfy it.
+    const harness = createHarness({ reviews: [clean, clean] });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+    await pushRepair(harness, "head0002");
+    await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    const updatesBefore = harness.fakeGitHub.checkUpdates.length;
+
+    // A further push, with the cycle's budget now exhausted.
+    await pushRepair(harness, "head0003");
+
+    const after = harness.fakeGitHub.checkUpdates.slice(updatesBefore);
+    expect(after.length).toBeGreaterThan(0);
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.status).toBe("completed");
+    expect(last?.conclusion).toBe("success");
+    expect(last?.details).toContain("budget");
+  });
+
+  test("a spent budget over outstanding findings does not report success", async () => {
+    // The same contract must not become a way to launder a blocked cycle green.
+    const harness = createHarness({
+      reviews: [changesRequired(), changesRequired([finding({ id: "F2" })])],
+    });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+    await pushRepair(harness, "head0002");
+    await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    await pushRepair(harness, "head0003");
+
+    // A blocked cycle takes the deterministic resolution path, which reports
+    // failure; a blocked budget-spent cycle reports action_required. Either is
+    // correct. What must never happen is a success.
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.status).toBe("completed");
+    expect(["failure", "action_required"]).toContain(String(last?.conclusion));
   });
 });

@@ -318,6 +318,32 @@ const buildContextFiles = async (
   return result;
 };
 
+/**
+ * A stable, machine-readable verdict line.
+ *
+ * Every consumer outside this repo — a merge guard, a CI job, a human's script —
+ * otherwise has to infer the gate's decision from English in the check title,
+ * and any reword silently changes their behaviour. Emitting one explicit line
+ * gives them something versioned to key on: consumers parse this, and the title
+ * becomes advisory prose for humans.
+ *
+ * Format is `key=value` pairs on one line, deliberately trivial to parse from a
+ * shell. Bump the schema number on any change to these fields.
+ */
+const VERDICT_SCHEMA = "frontier-verdict/v1";
+
+const verdictLine = (
+  verdict: string,
+  blockingCount: number,
+  advisoryCount: number
+): string =>
+  [
+    `schema=${VERDICT_SCHEMA}`,
+    `verdict=${verdict}`,
+    `blocking=${blockingCount}`,
+    `advisory=${advisoryCount}`,
+  ].join(" ");
+
 const findingsJson = (findings: FrontierFinding[]): string =>
   `\n\n<details><summary>Machine-readable findings</summary>\n\n\`\`\`json\n${JSON.stringify(
     findings,
@@ -345,7 +371,11 @@ const passedTitle = (
     return "Frontier review passed";
   }
   if (blockingCount > 0) {
-    return `Frontier review passed with ${blockingCount} blocking finding(s)`;
+    // Must not begin with "passed". The conclusion is action_required and the
+    // PR is parked for a fix, so a title that leads with "passed" tells a human
+    // reading only the title the opposite of what the check enforces - which is
+    // exactly how codex-home#65 merged with blocking findings outstanding.
+    return `Frontier review blocked: ${blockingCount} blocking finding(s)`;
   }
   return `Frontier review passed with ${reported.length} advisory finding(s)`;
 };
@@ -732,17 +762,25 @@ const runFirstReview = async (
       },
       now
     );
-    // A "pass" can still carry findings: the parser coerces an empty
-    // changes_required to a pass, and a model may attach advisory items to a
-    // passing verdict. Rendering them is the difference between a finding an
-    // operator can see and one that is silently dropped, so the check carries
-    // them and the title admits they exist.
+    // A "pass" can carry findings, and a passing *check* must still not claim
+    // more than the review did. Two cases:
+    //
+    // - advisory only (no P0-P2): a genuine pass. It reports success and
+    //   publishes the findings, because that is the difference between a finding
+    //   an operator can see and one that is silently dropped.
+    // - any blocking finding: the verdict and the severity contradict each
+    //   other. The final review already refuses a pass in this case
+    //   (`verdict === "pass" && blocking.length === 0`), and a green check here
+    //   is what let codex-home#65 merge with two blocking correctness findings
+    //   outstanding. Report action_required so the signal is honest.
     const reported = response.review.findings;
     const blockingCount = blockingFindings(reported).length;
+    const blockingOnPass = blockingCount > 0;
     await setCheck(deps, state, {
-      conclusion: "success",
-      details:
-        reported.length > 0 ? renderFindingsMarkdown(reported) : undefined,
+      conclusion: blockingOnPass ? "action_required" : "success",
+      details: `${verdictLine(blockingOnPass ? "blocked" : "passed", blockingCount, reported.length - blockingCount)}${
+        reported.length > 0 ? `\n${renderFindingsMarkdown(reported)}` : ""
+      }`,
       status: "completed",
       summary: usableSummary(
         response.review.summary,
@@ -750,12 +788,17 @@ const runFirstReview = async (
       ),
       title: passedTitle(reported, blockingCount),
     });
+    if (blockingOnPass) {
+      // Same lifecycle as any other "fix then re-review" outcome, so the
+      // existing label flow applies and no new state is invented.
+      state.lifecycle = "waiting_final_signal";
+    }
     return {
       calls: 1,
       costUsd: response.usage.costUsd,
       cycleId: state.cycleId,
       reviewCount: state.reviewCount,
-      status: "passed",
+      status: blockingOnPass ? "waiting_final_signal" : "passed",
     };
   }
 
@@ -774,9 +817,10 @@ const runFirstReview = async (
     now
   );
 
+  const firstBlocking = blockingFindings(response.review.findings).length;
   await setCheck(deps, state, {
     conclusion: "action_required",
-    details: `${renderFindingsMarkdown(response.review.findings)}${findingsJson(
+    details: `${verdictLine("changes_required", firstBlocking, response.review.findings.length - firstBlocking)}\n${renderFindingsMarkdown(response.review.findings)}${findingsJson(
       response.review.findings
     )}`,
     status: "completed",
@@ -1165,7 +1209,7 @@ const attemptResolution = async (
   };
 };
 
-const evaluate = (
+const evaluate = async (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
   options: { forceReview?: boolean },
@@ -1190,6 +1234,28 @@ const evaluate = (
       repo: state.repo,
       reviewCount: state.reviewCount,
     });
+
+    // The required-check contract: every event must leave a terminal check on
+    // the head. Without this, a push arriving after the cycle's budget is spent
+    // produced NO check at all, and on a repository that requires
+    // `frontier-quality` the PR became permanently unmergeable - the required
+    // check could never be satisfied, because no further review would ever run.
+    // It reports the cycle's own outcome, so it cannot be mistaken for a fresh
+    // review that passed.
+    const spentPassed =
+      state.lifecycle === "passed" || state.lifecycle === "resolved";
+    await setCheck(deps, state, {
+      conclusion: spentPassed ? "success" : "action_required",
+      details: `${verdictLine(spentPassed ? "passed" : "blocked", 0, 0)}\n\nReview budget for this cycle is spent (${state.reviewCount} of ${deps.limits.maxReviewsPerCycle}). No further review will run until a new cycle is started.`,
+      status: "completed",
+      summary: spentPassed
+        ? `Review budget spent; the last review passed. Label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`
+        : `Review budget spent with findings outstanding. Fix them, then label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`,
+      title: spentPassed
+        ? "Frontier review passed (cycle complete)"
+        : "Frontier review: cycle complete with findings outstanding",
+    });
+
     return settled({
       calls: 0,
       costUsd: 0,
