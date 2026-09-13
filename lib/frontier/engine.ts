@@ -732,15 +732,22 @@ const runFirstReview = async (
       },
       now
     );
-    // A "pass" can still carry findings: the parser coerces an empty
-    // changes_required to a pass, and a model may attach advisory items to a
-    // passing verdict. Rendering them is the difference between a finding an
-    // operator can see and one that is silently dropped, so the check carries
-    // them and the title admits they exist.
+    // A "pass" can carry findings, and a passing *check* must still not claim
+    // more than the review did. Two cases:
+    //
+    // - advisory only (no P0-P2): a genuine pass. It reports success and
+    //   publishes the findings, because that is the difference between a finding
+    //   an operator can see and one that is silently dropped.
+    // - any blocking finding: the verdict and the severity contradict each
+    //   other. The final review already refuses a pass in this case
+    //   (`verdict === "pass" && blocking.length === 0`), and a green check here
+    //   is what let codex-home#65 merge with two blocking correctness findings
+    //   outstanding. Report action_required so the signal is honest.
     const reported = response.review.findings;
     const blockingCount = blockingFindings(reported).length;
+    const blockingOnPass = blockingCount > 0;
     await setCheck(deps, state, {
-      conclusion: "success",
+      conclusion: blockingOnPass ? "action_required" : "success",
       details:
         reported.length > 0 ? renderFindingsMarkdown(reported) : undefined,
       status: "completed",
@@ -750,12 +757,17 @@ const runFirstReview = async (
       ),
       title: passedTitle(reported, blockingCount),
     });
+    if (blockingOnPass) {
+      // Same lifecycle as any other "fix then re-review" outcome, so the
+      // existing label flow applies and no new state is invented.
+      state.lifecycle = "waiting_final_signal";
+    }
     return {
       calls: 1,
       costUsd: response.usage.costUsd,
       cycleId: state.cycleId,
       reviewCount: state.reviewCount,
-      status: "passed",
+      status: blockingOnPass ? "waiting_final_signal" : "passed",
     };
   }
 

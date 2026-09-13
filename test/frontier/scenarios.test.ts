@@ -553,6 +553,42 @@ describe("a required check that never reports", () => {
 });
 
 describe("a passing verdict must not hide what the model reported", () => {
+  test("a pass carrying blocking findings is not reported as a green check", async () => {
+    // The exact shape of codex-home#65: verdict "pass", severity P1, check read
+    // as success, PR merged 85 seconds later with the finding outstanding.
+    // A blocking finding contradicts a pass verdict, and the final review
+    // already refuses a pass in that case, so neither may look mergeable.
+    const contradictory: FrontierReview = {
+      findings: [finding({ severity: "P1" })],
+      summary: "Passing, but the guard's core predicate over-triggers.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [contradictory] });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("waiting_final_signal");
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.conclusion).toBe("action_required");
+    expect(last?.title).toContain("blocking");
+  });
+
+  test("an advisory-only pass still reports success", async () => {
+    const advisoryOnly: FrontierReview = {
+      findings: [finding({ id: "F9", severity: "P3" })],
+      summary: "Nit: naming.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [advisoryOnly] });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.conclusion).toBe("success");
+    expect(last?.title).toContain("advisory");
+  });
+
   test("findings attached to a pass are published on the check", async () => {
     // Observed live: a review returned verdict "pass" with a summary alleging a
     // regression, and the check title said "Frontier review passed". Findings
@@ -568,9 +604,11 @@ describe("a passing verdict must not hide what the model reported", () => {
 
     const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
 
-    expect(outcome.status).toBe("passed");
+    expect(outcome.status).toBe("waiting_final_signal");
     const last = harness.fakeGitHub.checkUpdates.at(-1);
-    expect(last?.conclusion).toBe("success");
+    // P1 is blocking, so the conclusion is action_required (see the dedicated
+    // test above); what matters here is that the finding is published at all.
+    expect(last?.conclusion).toBe("action_required");
     expect(last?.details).toContain("F1");
     // The fixture finding is P1, so the label must say "blocking": the first
     // review passes on the verdict alone while the final review refuses a pass
