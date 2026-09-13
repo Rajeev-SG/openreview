@@ -258,10 +258,16 @@ export const createOctokitFrontierGitHub = (
           names: withoutSelfCheck([...contexts, ...checks]),
         };
       } catch (error) {
-        const { status } = error as { status?: number };
-        const kind = classifyRequiredChecksFailure(status);
+        const { status, response } = error as {
+          status?: number;
+          response?: { data?: { message?: string } };
+        };
+        const kind = classifyRequiredChecksFailure(
+          status,
+          response?.data?.message
+        );
 
-        // 404: the branch genuinely has no protection, so there is nothing to wait for.
+        // 404, or a plan that cannot offer protection: there is nothing to wait for.
         if (kind === "none") {
           return { known: true, names: [] };
         }

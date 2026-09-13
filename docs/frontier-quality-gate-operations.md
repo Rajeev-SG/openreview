@@ -95,7 +95,32 @@ reviewing without being able to honour the wait-for-CI guarantee.
 
 Either grant **Administration: Read-only** (and accept the installation update),
 or set `FRONTIER_REQUIRED_CHECKS` — which takes precedence over branch
-protection when set. Verify with an installation token:
+protection when set.
+
+### Correction (2026-09-13): the private Free-plan 403 is a plan limit, not a permission gap
+
+The advice above is wrong for a **private repository on the GitHub Free plan**.
+There, branch protection is not offered at all, and GitHub answers the
+required-status-checks read with:
+
+```
+403 Upgrade to GitHub Pro or make this repository public to enable this feature.
+```
+
+Verified with an **account-admin user token**, which has every permission the App
+could be granted — so granting `Administration: Read-only` cannot change this
+outcome, and setting `FRONTIER_REQUIRED_CHECKS` is the wrong tool because the
+override is deployment-wide: a check name listed for one repository never
+reports on another, and the gate then waits out `FRONTIER_CI_WAIT_TIMEOUT_MS`
+before failing closed.
+
+`classifyRequiredChecksFailure` now treats that specific 403 as `none` rather
+than `unreadable`: no required-check list can exist for such a repository, so
+there is genuinely nothing to wait for — the same conclusion as a 404. Any other
+403 (`Resource not accessible by integration`, plain 403 with no message) is
+still `unreadable` and still fails closed.
+
+Verify with an installation token:
 
 ```bash
 # should be 200, not 403

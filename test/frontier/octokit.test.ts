@@ -36,6 +36,22 @@ describe("classifyRequiredChecksFailure", () => {
     expect(classifyRequiredChecksFailure(403)).toBe("unreadable");
   });
 
+  test("403 for a plan without branch protection means nothing to wait for", () => {
+    // Observed with an account-admin token on a private Free-plan repository,
+    // so this is the plan, not the App's permission. Reporting it as unknown
+    // made every such repository fail closed and skip review forever.
+    const message =
+      "Upgrade to GitHub Pro or make this repository public to enable this feature.";
+    expect(classifyRequiredChecksFailure(403, message)).toBe("none");
+    expect(
+      classifyRequiredChecksFailure(
+        403,
+        "Resource not accessible by integration"
+      )
+    ).toBe("unreadable");
+    expect(classifyRequiredChecksFailure(403)).toBe("unreadable");
+  });
+
   test("anything else is a real error and must surface", () => {
     expect(classifyRequiredChecksFailure(500)).toBe("throw");
     expect(classifyRequiredChecksFailure()).toBe("throw");
