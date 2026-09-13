@@ -328,6 +328,41 @@ const findingsJson = (findings: FrontierFinding[]): string =>
 const blockingFindings = (findings: FrontierFinding[]): FrontierFinding[] =>
   findings.filter((finding) => finding.severity !== "P3");
 
+/**
+ * How to label a passing verdict that still carried findings.
+ *
+ * Severity must not be flattened to "advisory": the first review passes on the
+ * model's verdict alone, while the final review refuses a pass when any finding
+ * is blocking (P0-P2). The same finding is therefore blocking at the last gate
+ * and non-blocking earlier, so the label reports what the finding claims rather
+ * than asserting the gentler of the two readings.
+ */
+const passedTitle = (
+  reported: FrontierFinding[],
+  blockingCount: number
+): string => {
+  if (reported.length === 0) {
+    return "Frontier review passed";
+  }
+  if (blockingCount > 0) {
+    return `Frontier review passed with ${blockingCount} blocking finding(s)`;
+  }
+  return `Frontier review passed with ${reported.length} advisory finding(s)`;
+};
+
+const passSummaryFor = (
+  reported: FrontierFinding[],
+  blockingCount: number
+): string => {
+  if (reported.length === 0) {
+    return "No material findings.";
+  }
+  if (blockingCount > 0) {
+    return `${blockingCount} blocking finding(s) reported under a passing verdict; see the check details.`;
+  }
+  return `${reported.length} advisory finding(s); see the check details.`;
+};
+
 const recordReview = (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
@@ -379,7 +414,7 @@ const reviewSummaryComment = (review: FrontierReview): string =>
   [
     "## Frontier review",
     "",
-    review.summary || "_No summary provided._",
+    usableSummary(review.summary, "_No summary provided._"),
     "",
     renderFindingsMarkdown(review.findings),
     "",
@@ -702,22 +737,18 @@ const runFirstReview = async (
     // passing verdict. Rendering them is the difference between a finding an
     // operator can see and one that is silently dropped, so the check carries
     // them and the title admits they exist.
-    const advisory = response.review.findings;
+    const reported = response.review.findings;
+    const blockingCount = blockingFindings(reported).length;
     await setCheck(deps, state, {
       conclusion: "success",
       details:
-        advisory.length > 0 ? renderFindingsMarkdown(advisory) : undefined,
+        reported.length > 0 ? renderFindingsMarkdown(reported) : undefined,
       status: "completed",
       summary: usableSummary(
         response.review.summary,
-        advisory.length > 0
-          ? `${advisory.length} advisory finding(s); see the check details.`
-          : "No material findings."
+        passSummaryFor(reported, blockingCount)
       ),
-      title:
-        advisory.length > 0
-          ? `Frontier review passed with ${advisory.length} finding(s)`
-          : "Frontier review passed",
+      title: passedTitle(reported, blockingCount),
     });
     return {
       calls: 1,
@@ -955,22 +986,18 @@ const attemptFinalReview = async (
 
   if (response.review.verdict === "pass" && blocking.length === 0) {
     state.lifecycle = "passed";
-    const advisory = response.review.findings;
+    const reported = response.review.findings;
+    const blockingCount = blockingFindings(reported).length;
     await setCheck(deps, state, {
       conclusion: "success",
       details:
-        advisory.length > 0 ? renderFindingsMarkdown(advisory) : undefined,
+        reported.length > 0 ? renderFindingsMarkdown(reported) : undefined,
       status: "completed",
       summary: usableSummary(
         response.review.summary,
-        advisory.length > 0
-          ? `${advisory.length} advisory finding(s); see the check details.`
-          : "No material findings."
+        passSummaryFor(reported, blockingCount)
       ),
-      title:
-        advisory.length > 0
-          ? `Frontier review passed with ${advisory.length} finding(s)`
-          : "Frontier review passed",
+      title: passedTitle(reported, blockingCount),
     });
     return {
       calls: 1,
