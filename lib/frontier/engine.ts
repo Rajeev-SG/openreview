@@ -262,6 +262,19 @@ const resolveCi = async (
   };
 };
 
+/**
+ * A model summary is advisory prose, and it is sometimes unusable: an empty
+ * string and a bare "..." have both been observed in the wild. The check run is
+ * the only surface a PR author reads, so never publish a summary that says
+ * nothing.
+ */
+const MEANINGFUL_TEXT = /[\p{L}\p{N}]/u;
+
+const usableSummary = (value: string | undefined, fallback: string): string => {
+  const text = (value ?? "").trim();
+  return MEANINGFUL_TEXT.test(text) ? text : fallback;
+};
+
 const setCheck = async (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
@@ -684,11 +697,27 @@ const runFirstReview = async (
       },
       now
     );
+    // A "pass" can still carry findings: the parser coerces an empty
+    // changes_required to a pass, and a model may attach advisory items to a
+    // passing verdict. Rendering them is the difference between a finding an
+    // operator can see and one that is silently dropped, so the check carries
+    // them and the title admits they exist.
+    const advisory = response.review.findings;
     await setCheck(deps, state, {
       conclusion: "success",
+      details:
+        advisory.length > 0 ? renderFindingsMarkdown(advisory) : undefined,
       status: "completed",
-      summary: response.review.summary || "Frontier review passed.",
-      title: "Frontier review passed",
+      summary: usableSummary(
+        response.review.summary,
+        advisory.length > 0
+          ? `${advisory.length} advisory finding(s); see the check details.`
+          : "No material findings."
+      ),
+      title:
+        advisory.length > 0
+          ? `Frontier review passed with ${advisory.length} finding(s)`
+          : "Frontier review passed",
     });
     return {
       calls: 1,
@@ -926,11 +955,22 @@ const attemptFinalReview = async (
 
   if (response.review.verdict === "pass" && blocking.length === 0) {
     state.lifecycle = "passed";
+    const advisory = response.review.findings;
     await setCheck(deps, state, {
       conclusion: "success",
+      details:
+        advisory.length > 0 ? renderFindingsMarkdown(advisory) : undefined,
       status: "completed",
-      summary: response.review.summary || "Final frontier review passed.",
-      title: "Frontier review passed",
+      summary: usableSummary(
+        response.review.summary,
+        advisory.length > 0
+          ? `${advisory.length} advisory finding(s); see the check details.`
+          : "No material findings."
+      ),
+      title:
+        advisory.length > 0
+          ? `Frontier review passed with ${advisory.length} finding(s)`
+          : "Frontier review passed",
     });
     return {
       calls: 1,

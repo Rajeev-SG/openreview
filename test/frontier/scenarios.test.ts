@@ -551,3 +551,51 @@ describe("a required check that never reports", () => {
     );
   });
 });
+
+describe("a passing verdict must not hide what the model reported", () => {
+  test("findings attached to a pass are published on the check", async () => {
+    // Observed live: a review returned verdict "pass" with a summary alleging a
+    // regression, and the check title said "Frontier review passed". Findings
+    // were persisted but never rendered, so the only place they existed was
+    // prose a reader had to notice. A pass may legitimately carry advisory
+    // items; dropping them is not a judgement call.
+    const flagged: FrontierReview = {
+      findings: [finding()],
+      summary: "Advisory: consider the failure mode when the upstream is slow.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [flagged] });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.conclusion).toBe("success");
+    expect(last?.details).toContain("F1");
+    expect(last?.title).toContain("1 finding");
+  });
+
+  test("a clean pass keeps the plain title and no details", async () => {
+    const harness = createHarness({ reviews: [clean] });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.title).toBe("Frontier review passed");
+    expect(last?.details).toBeUndefined();
+  });
+
+  test("an unusable summary never reaches the check summary", async () => {
+    // "..." and "" have both been observed from the judge. The check summary is
+    // what a PR author reads, so it must say something.
+    for (const summary of ["...", "   ", ""]) {
+      const empty: FrontierReview = { findings: [], summary, verdict: "pass" };
+      const harness = createHarness({ reviews: [empty] });
+
+      await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+      const last = harness.fakeGitHub.checkUpdates.at(-1);
+      expect(last?.summary).toBe("No material findings.");
+    }
+  });
+});
