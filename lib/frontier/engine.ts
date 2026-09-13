@@ -318,6 +318,32 @@ const buildContextFiles = async (
   return result;
 };
 
+/**
+ * A stable, machine-readable verdict line.
+ *
+ * Every consumer outside this repo — a merge guard, a CI job, a human's script —
+ * otherwise has to infer the gate's decision from English in the check title,
+ * and any reword silently changes their behaviour. Emitting one explicit line
+ * gives them something versioned to key on: consumers parse this, and the title
+ * becomes advisory prose for humans.
+ *
+ * Format is `key=value` pairs on one line, deliberately trivial to parse from a
+ * shell. Bump the schema number on any change to these fields.
+ */
+const VERDICT_SCHEMA = "frontier-verdict/v1";
+
+const verdictLine = (
+  verdict: string,
+  blockingCount: number,
+  advisoryCount: number
+): string =>
+  [
+    `schema=${VERDICT_SCHEMA}`,
+    `verdict=${verdict}`,
+    `blocking=${blockingCount}`,
+    `advisory=${advisoryCount}`,
+  ].join(" ");
+
 const findingsJson = (findings: FrontierFinding[]): string =>
   `\n\n<details><summary>Machine-readable findings</summary>\n\n\`\`\`json\n${JSON.stringify(
     findings,
@@ -752,8 +778,9 @@ const runFirstReview = async (
     const blockingOnPass = blockingCount > 0;
     await setCheck(deps, state, {
       conclusion: blockingOnPass ? "action_required" : "success",
-      details:
-        reported.length > 0 ? renderFindingsMarkdown(reported) : undefined,
+      details: `${verdictLine(blockingOnPass ? "blocked" : "passed", blockingCount, reported.length - blockingCount)}${
+        reported.length > 0 ? `\n${renderFindingsMarkdown(reported)}` : ""
+      }`,
       status: "completed",
       summary: usableSummary(
         response.review.summary,
@@ -790,9 +817,10 @@ const runFirstReview = async (
     now
   );
 
+  const firstBlocking = blockingFindings(response.review.findings).length;
   await setCheck(deps, state, {
     conclusion: "action_required",
-    details: `${renderFindingsMarkdown(response.review.findings)}${findingsJson(
+    details: `${verdictLine("changes_required", firstBlocking, response.review.findings.length - firstBlocking)}\n${renderFindingsMarkdown(response.review.findings)}${findingsJson(
       response.review.findings
     )}`,
     status: "completed",

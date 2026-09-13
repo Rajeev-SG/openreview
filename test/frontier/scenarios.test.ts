@@ -574,6 +574,9 @@ describe("a passing verdict must not hide what the model reported", () => {
     // F2 from the gate's own review: a title leading with "passed" tells a
     // human the opposite of what the conclusion enforces.
     expect(last?.title).not.toContain("passed");
+    // The machine-readable verdict is the contract external consumers use.
+    expect(last?.details).toContain("verdict=blocked");
+    expect(last?.details).toContain("blocking=1");
   });
 
   test("the contradictory-pass path completes: fix, final signal, delta review", async () => {
@@ -673,14 +676,19 @@ describe("a passing verdict must not hide what the model reported", () => {
     );
   });
 
-  test("a clean pass keeps the plain title and no details", async () => {
+  test("a clean pass keeps the plain title and carries only the verdict line", async () => {
     const harness = createHarness({ reviews: [clean] });
 
     await handleFrontierEvent(harness.deps, pullRequestEvent());
 
     const last = harness.fakeGitHub.checkUpdates.at(-1);
     expect(last?.title).toBe("Frontier review passed");
-    expect(last?.details).toBeUndefined();
+    // No findings to render, but the machine-readable verdict is always present
+    // so an external consumer never has to parse the title.
+    expect(last?.details).toContain("schema=frontier-verdict/v1");
+    expect(last?.details).toContain("verdict=passed");
+    expect(last?.details).toContain("blocking=0");
+    expect(last?.details).not.toContain("####");
   });
 
   test("an unusable summary never reaches the check summary", async () => {
