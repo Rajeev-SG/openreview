@@ -551,3 +551,84 @@ describe("a required check that never reports", () => {
     );
   });
 });
+
+describe("a passing verdict must not hide what the model reported", () => {
+  test("findings attached to a pass are published on the check", async () => {
+    // Observed live: a review returned verdict "pass" with a summary alleging a
+    // regression, and the check title said "Frontier review passed". Findings
+    // were persisted but never rendered, so the only place they existed was
+    // prose a reader had to notice. A pass may legitimately carry advisory
+    // items; dropping them is not a judgement call.
+    const flagged: FrontierReview = {
+      findings: [finding()],
+      summary: "Advisory: consider the failure mode when the upstream is slow.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [flagged] });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.conclusion).toBe("success");
+    expect(last?.details).toContain("F1");
+    // The fixture finding is P1, so the label must say "blocking": the first
+    // review passes on the verdict alone while the final review refuses a pass
+    // with any blocking finding, and flattening severity to "advisory" would
+    // report the gentler of two readings the gate itself does not treat alike.
+    expect(last?.title).toContain("1 blocking finding");
+
+    const advisory: FrontierReview = {
+      findings: [finding({ id: "F2", severity: "P3" })],
+      summary: "Nit: naming.",
+      verdict: "pass",
+    };
+    const cleanTitle = createHarness({ reviews: [advisory] });
+    await handleFrontierEvent(cleanTitle.deps, pullRequestEvent());
+    expect(cleanTitle.fakeGitHub.checkUpdates.at(-1)?.title).toContain(
+      "1 advisory finding"
+    );
+  });
+
+  test("a clean pass keeps the plain title and no details", async () => {
+    const harness = createHarness({ reviews: [clean] });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.title).toBe("Frontier review passed");
+    expect(last?.details).toBeUndefined();
+  });
+
+  test("an unusable summary never reaches the check summary", async () => {
+    // "..." and "" have both been observed from the judge. The check summary is
+    // what a PR author reads, so it must say something.
+    for (const summary of ["...", "   ", ""]) {
+      const empty: FrontierReview = { findings: [], summary, verdict: "pass" };
+      const harness = createHarness({ reviews: [empty] });
+
+      await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+      const last = harness.fakeGitHub.checkUpdates.at(-1);
+      expect(last?.summary).toBe("No material findings.");
+    }
+  });
+});
+
+describe("every surface that publishes the model's summary", () => {
+  test("a degenerate summary is replaced on the PR comment too", async () => {
+    // The check summary is not the only surface: a changes_required review also
+    // posts review.summary as a PR comment, where a truthy "..." passed straight
+    // through the old `|| fallback`.
+    const harness = createHarness({
+      reviews: [{ ...changesRequired(), summary: "..." }],
+    });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    const comment = harness.fakeGitHub.comments.at(-1);
+    expect(comment).toBeDefined();
+    expect(comment).toContain("_No summary provided._");
+    expect(comment).not.toContain("## Frontier review\n\n...");
+  });
+});

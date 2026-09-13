@@ -262,6 +262,19 @@ const resolveCi = async (
   };
 };
 
+/**
+ * A model summary is advisory prose, and it is sometimes unusable: an empty
+ * string and a bare "..." have both been observed in the wild. The check run is
+ * the only surface a PR author reads, so never publish a summary that says
+ * nothing.
+ */
+const MEANINGFUL_TEXT = /[\p{L}\p{N}]/u;
+
+const usableSummary = (value: string | undefined, fallback: string): string => {
+  const text = (value ?? "").trim();
+  return MEANINGFUL_TEXT.test(text) ? text : fallback;
+};
+
 const setCheck = async (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
@@ -315,6 +328,41 @@ const findingsJson = (findings: FrontierFinding[]): string =>
 const blockingFindings = (findings: FrontierFinding[]): FrontierFinding[] =>
   findings.filter((finding) => finding.severity !== "P3");
 
+/**
+ * How to label a passing verdict that still carried findings.
+ *
+ * Severity must not be flattened to "advisory": the first review passes on the
+ * model's verdict alone, while the final review refuses a pass when any finding
+ * is blocking (P0-P2). The same finding is therefore blocking at the last gate
+ * and non-blocking earlier, so the label reports what the finding claims rather
+ * than asserting the gentler of the two readings.
+ */
+const passedTitle = (
+  reported: FrontierFinding[],
+  blockingCount: number
+): string => {
+  if (reported.length === 0) {
+    return "Frontier review passed";
+  }
+  if (blockingCount > 0) {
+    return `Frontier review passed with ${blockingCount} blocking finding(s)`;
+  }
+  return `Frontier review passed with ${reported.length} advisory finding(s)`;
+};
+
+const passSummaryFor = (
+  reported: FrontierFinding[],
+  blockingCount: number
+): string => {
+  if (reported.length === 0) {
+    return "No material findings.";
+  }
+  if (blockingCount > 0) {
+    return `${blockingCount} blocking finding(s) reported under a passing verdict; see the check details.`;
+  }
+  return `${reported.length} advisory finding(s); see the check details.`;
+};
+
 const recordReview = (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
@@ -366,7 +414,7 @@ const reviewSummaryComment = (review: FrontierReview): string =>
   [
     "## Frontier review",
     "",
-    review.summary || "_No summary provided._",
+    usableSummary(review.summary, "_No summary provided._"),
     "",
     renderFindingsMarkdown(review.findings),
     "",
@@ -684,11 +732,23 @@ const runFirstReview = async (
       },
       now
     );
+    // A "pass" can still carry findings: the parser coerces an empty
+    // changes_required to a pass, and a model may attach advisory items to a
+    // passing verdict. Rendering them is the difference between a finding an
+    // operator can see and one that is silently dropped, so the check carries
+    // them and the title admits they exist.
+    const reported = response.review.findings;
+    const blockingCount = blockingFindings(reported).length;
     await setCheck(deps, state, {
       conclusion: "success",
+      details:
+        reported.length > 0 ? renderFindingsMarkdown(reported) : undefined,
       status: "completed",
-      summary: response.review.summary || "Frontier review passed.",
-      title: "Frontier review passed",
+      summary: usableSummary(
+        response.review.summary,
+        passSummaryFor(reported, blockingCount)
+      ),
+      title: passedTitle(reported, blockingCount),
     });
     return {
       calls: 1,
@@ -926,11 +986,18 @@ const attemptFinalReview = async (
 
   if (response.review.verdict === "pass" && blocking.length === 0) {
     state.lifecycle = "passed";
+    const reported = response.review.findings;
+    const blockingCount = blockingFindings(reported).length;
     await setCheck(deps, state, {
       conclusion: "success",
+      details:
+        reported.length > 0 ? renderFindingsMarkdown(reported) : undefined,
       status: "completed",
-      summary: response.review.summary || "Final frontier review passed.",
-      title: "Frontier review passed",
+      summary: usableSummary(
+        response.review.summary,
+        passSummaryFor(reported, blockingCount)
+      ),
+      title: passedTitle(reported, blockingCount),
     });
     return {
       calls: 1,
