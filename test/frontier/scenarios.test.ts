@@ -724,6 +724,78 @@ describe("every surface that publishes the model's summary", () => {
   });
 });
 
+describe("a passed cycle-complete check carries nothing outstanding", () => {
+  test("a passed cycle reports no blocking counts and renders no findings", async () => {
+    // The mirror of the erased-findings bug. `state.findings` is not cleared by
+    // a successful resolution, so deriving the block from it alone would let a
+    // passed cycle-complete check display blocking findings it just fixed -
+    // `verdict=passed` beside `blocking=N`. A passed (or resolved) cycle has
+    // nothing outstanding by definition, so it carries neither.
+    // The final review PASSES but carries an advisory finding, so state.findings
+    // is non-empty at the moment the cycle-complete write runs - which is what
+    // makes this a real test of the gating rather than an empty-list coincidence.
+    const passingWithAdvisory: FrontierReview = {
+      findings: [finding({ id: "F9", severity: "P3" })],
+      summary: "Nit only.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [clean, passingWithAdvisory] });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+    await pushRepair(harness, "head0002");
+    await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    // Same-SHA event with the budget spent: reaches the cycle-complete write.
+    await handleFrontierEvent(
+      harness.deps,
+      pullRequestEvent({ action: "synchronize", headSha: "head0002" })
+    );
+
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    const details = String(last?.details);
+    expect(details).toContain("verdict=passed");
+    expect(details).toContain("blocking=0");
+    expect(details).toContain("advisory=0");
+    // No rendered findings table.
+    expect(details).not.toContain("| Finding | Severity |");
+    expect(String(last?.title)).toBe("Frontier review passed (cycle complete)");
+  });
+});
+
+describe("a spent budget must not erase the findings it is reporting", () => {
+  test("the cycle-complete check carries the real findings and counts", async () => {
+    // The write replaces the check run, so hardcoding 0/0 both contradicted
+    // `verdict=blocked` and erased what the final review had just posted.
+    const harness = createHarness({
+      reviews: [changesRequired(), changesRequired([finding({ id: "F2" })])],
+    });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+    await pushRepair(harness, "head0002");
+    await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    // A same-SHA event with the budget spent and no repair push to resolve -
+    // this is the path codex-home#81 hit, where the cycle-complete write
+    // replaced the final review's check.
+    await handleFrontierEvent(
+      harness.deps,
+      pullRequestEvent({ action: "synchronize", headSha: "head0002" })
+    );
+
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    const details = String(last?.details);
+    expect(details).toContain("verdict=blocked");
+    expect(details).toContain("blocking=1");
+    // The findings themselves must survive the rewrite.
+    expect(details).toContain("F2");
+    expect(String(last?.title)).toContain("1 blocking finding");
+  });
+});
+
 describe("a spent review budget must still leave a check on the head", () => {
   test("a push after the budget is spent produces a terminal check, not silence", async () => {
     // The deadlock: `settled()` creates no check run, so a push arriving after

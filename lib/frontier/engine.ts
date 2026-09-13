@@ -1244,16 +1244,34 @@ const evaluate = async (
     // review that passed.
     const spentPassed =
       state.lifecycle === "passed" || state.lifecycle === "resolved";
+
+    // Report the cycle's OWN outcome. This write REPLACES the check run, so a
+    // blocked cycle must carry its real findings - hardcoding 0/0 contradicted
+    // `verdict=blocked` and erased what the final review had just posted.
+    //
+    // A passed (or resolved) cycle is the mirror case and must carry NEITHER
+    // counts nor findings. `state.findings` is not cleared by a successful
+    // resolution, so it can still hold the blocking findings that were just
+    // fixed; rendering those beside `verdict=passed` would assert that a cycle
+    // both passed and has outstanding blocking findings.
+    const spentFindings = spentPassed ? [] : (state.findings ?? []);
+    const spentBlocking = blockingFindings(spentFindings).length;
+    const spentAdvisory = spentFindings.length - spentBlocking;
+    const spentVerdict = spentPassed ? "passed" : "blocked";
+    const findingsBlock = spentFindings.length
+      ? `\n\n${renderFindingsMarkdown(spentFindings)}`
+      : "";
+
     await setCheck(deps, state, {
       conclusion: spentPassed ? "success" : "action_required",
-      details: `${verdictLine(spentPassed ? "passed" : "blocked", 0, 0)}\n\nReview budget for this cycle is spent (${state.reviewCount} of ${deps.limits.maxReviewsPerCycle}). No further review will run until a new cycle is started.`,
+      details: `${verdictLine(spentVerdict, spentBlocking, spentAdvisory)}\n\nReview budget for this cycle is spent (${state.reviewCount} of ${deps.limits.maxReviewsPerCycle}). No further review will run until a new cycle is started.${findingsBlock}`,
       status: "completed",
       summary: spentPassed
         ? `Review budget spent; the last review passed. Label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`
-        : `Review budget spent with findings outstanding. Fix them, then label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`,
+        : `Review budget spent with ${spentBlocking} blocking finding(s) outstanding. Fix them, then label \`${NEW_CYCLE_LABEL}\` for a fresh cycle.`,
       title: spentPassed
         ? "Frontier review passed (cycle complete)"
-        : "Frontier review: cycle complete with findings outstanding",
+        : `Frontier review: cycle complete with ${spentBlocking} blocking finding(s) outstanding`,
     });
 
     return settled({

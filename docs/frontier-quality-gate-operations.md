@@ -137,6 +137,46 @@ is stripped out of it. Use it for repositories the App cannot read, or to pin an
 explicit list. A name listed there that never reports will hang the gate at
 "waiting for required CI" indefinitely, so list only checks that actually run.
 
+### Trap: labels are events, not state
+
+The gate acts on a `labeled` webhook, and GitHub sends one only when the label
+set actually **changes**. Adding a label the PR already carries does nothing: no
+check run appears, and it is indistinguishable from a dead deployment.
+
+Hit twice on 2026-09-13 (`codex-home#81`) while the PR sat in
+`lifecycle: waiting_final_signal` with `reviewCount: 1`. Each occurrence cost a
+full diagnosis cycle, including one wrong conclusion that the gate had stopped
+running.
+
+**Toggle the label to re-fire any label-driven action:**
+
+```bash
+gh pr edit <pr> --remove-label frontier-ready-final
+gh pr edit <pr> --add-label    frontier-ready-final
+```
+
+The same applies to `frontier-new-cycle`. To confirm the state rather than infer
+it, read the durable record (`frontier:pr:<owner>/<repo>#<pr>` in Upstash, under
+the `chat-sdk:cache:` prefix): `lifecycle: waiting_final_signal` with
+`finalSignalPending: false` means the gate is waiting for an event it has not
+received.
+
+### Fixed: the cycle-complete check erased the findings it was reporting
+
+When a cycle's budget is spent and no repair push is pending, the gate writes a
+terminal "cycle complete" check. That write **replaces** the check run, and it
+hardcoded `blocking=0 advisory=0` while also dropping the findings body. A
+blocked PR therefore read:
+
+```
+Frontier review: cycle complete with findings outstanding
+schema=frontier-verdict/v1 verdict=blocked blocking=0 advisory=0
+```
+
+`verdict=blocked` with `blocking=0` is a contradiction, and the findings were
+lost from the check run (they survived only in the durable record). The write now
+reports the cycle's real counts and re-renders its findings.
+
 ### Trap: the gate must never be its own required check
 
 `frontier-quality` is normally a required branch check, and the gate reads
