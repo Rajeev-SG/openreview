@@ -571,6 +571,51 @@ describe("a passing verdict must not hide what the model reported", () => {
     const last = harness.fakeGitHub.checkUpdates.at(-1);
     expect(last?.conclusion).toBe("action_required");
     expect(last?.title).toContain("blocking");
+    // F2 from the gate's own review: a title leading with "passed" tells a
+    // human the opposite of what the conclusion enforces.
+    expect(last?.title).not.toContain("passed");
+  });
+
+  test("the contradictory-pass path completes: fix, final signal, delta review", async () => {
+    // F1/F4 from the gate's own review of this change: the new lifecycle was
+    // only asserted at the first conclusion, and a parked state that cannot
+    // re-review would be worse than the problem it replaces.
+    //
+    // This is a characterisation test, not a fail-first one: it passes against
+    // the previous engine too, because the parked state reuses the existing
+    // repair-then-signal flow rather than inventing one. It is here to pin that
+    // the flow is reachable, which is what F1 said was unproven.
+    const contradictory: FrontierReview = {
+      findings: [finding({ id: "F1", severity: "P1" })],
+      summary: "Passing, but the predicate over-triggers.",
+      verdict: "pass",
+    };
+    const harness = createHarness({ reviews: [contradictory, clean] });
+
+    const first = await handleFrontierEvent(harness.deps, pullRequestEvent());
+    expect(first.status).toBe("waiting_final_signal");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe(
+      "action_required"
+    );
+
+    // The finding is persisted on the engine state before the branch is chosen
+    // (`state.findings = response.review.findings`), and `buildDelta` reads it as
+    // `originalFindings`; the packet test "delta packet carries the original
+    // findings" pins that baseline. What was previously unproven is that the
+    // parked state can re-review at all, which is what the steps below show.
+
+    // A repair push alone stays free, exactly as in the changes_required path.
+    await pushRepair(harness, "head0002");
+    expect(harness.model.calls).toHaveLength(1);
+
+    // The final signal must actually re-review and clear.
+    const final = await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "head0002" })
+    );
+    expect(harness.model.calls).toHaveLength(2);
+    expect(final.status).toBe("passed");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
   });
 
   test("an advisory-only pass still reports success", async () => {

@@ -345,7 +345,11 @@ const passedTitle = (
     return "Frontier review passed";
   }
   if (blockingCount > 0) {
-    return `Frontier review passed with ${blockingCount} blocking finding(s)`;
+    // Must not begin with "passed". The conclusion is action_required and the
+    // PR is parked for a fix, so a title that leads with "passed" tells a human
+    // reading only the title the opposite of what the check enforces - which is
+    // exactly how codex-home#65 merged with blocking findings outstanding.
+    return `Frontier review blocked: ${blockingCount} blocking finding(s)`;
   }
   return `Frontier review passed with ${reported.length} advisory finding(s)`;
 };
