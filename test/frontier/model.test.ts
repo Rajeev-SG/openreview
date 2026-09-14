@@ -33,6 +33,31 @@ const review = {
   verdict: "changes_required",
 };
 
+describe("parseFrontierResponse line normalisation", () => {
+  // The model reports file-level findings with line 0. Treated as a real line
+  // number, such a finding could never be resolved deterministically (no hunk
+  // contains line 0), so a blocked cycle could never clear.
+  test("drops a line of 0 so a file-level finding stays resolvable", () => {
+    const parsed = parseFrontierResponse({
+      ...review,
+      findings: [{ ...review.findings[0], line: 0 }],
+    });
+    expect(parsed.findings[0].line).toBeUndefined();
+  });
+
+  test("drops a negative line number", () => {
+    const parsed = parseFrontierResponse({
+      ...review,
+      findings: [{ ...review.findings[0], line: -3 }],
+    });
+    expect(parsed.findings[0].line).toBeUndefined();
+  });
+
+  test("keeps a real line number", () => {
+    expect(parseFrontierResponse(review).findings[0].line).toBe(12);
+  });
+});
+
 describe("parseFrontierResponse", () => {
   test("accepts a valid payload", () => {
     expect(parseFrontierResponse(review).findings).toHaveLength(1);

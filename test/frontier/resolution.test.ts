@@ -180,6 +180,17 @@ describe("buildResolutionReport", () => {
     expect(report.entries[0].status).toBe("addressed");
   });
 
+  test("resolves a file-level finding whose line is 0", () => {
+    // No hunk contains line 0, so enforcing the line check would leave the
+    // finding permanently unresolvable and block the cycle forever.
+    const report = buildResolutionReport({
+      ...base,
+      findings: [finding({ id: "F4", line: 0, path: "lib/a.ts" })],
+    });
+    expect(report.resolved).toBe(true);
+    expect(report.entries[0].status).toBe("addressed");
+  });
+
   test("leaves a finding unresolved when the change misses the flagged line", () => {
     const report = buildResolutionReport({
       ...base,

@@ -104,7 +104,12 @@ const normalizeFinding = (
   category: finding.category.trim(),
   id: finding.id.trim(),
   impact: finding.impact.trim(),
-  ...(finding.line === null ? {} : { line: finding.line }),
+  // A non-positive line means the model is naming no specific line (it emits 0
+  // for a file-level finding). Every renderer already treats it that way
+  // (`finding.line ? ... : ""`). Keeping it as a number here made the finding
+  // permanently unresolvable, because the deterministic resolver required the
+  // repair to reach the flagged line and no hunk can contain line 0.
+  ...(finding.line === null || finding.line <= 0 ? {} : { line: finding.line }),
   ...(finding.path === null || finding.path.trim() === ""
     ? {}
     : { path: finding.path.trim() }),
