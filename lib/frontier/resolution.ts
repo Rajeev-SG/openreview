@@ -234,7 +234,10 @@ export const buildResolutionReport = (input: {
 
     const { line } = finding;
 
-    if (line !== undefined) {
+    // Only a real, positive line is a location the repair must reach. A
+    // non-positive line means "no specific line"; enforcing it would leave the
+    // finding permanently unresolvable and block the cycle forever.
+    if (line !== undefined && line > 0) {
       const reached = match.change.hunks.some(
         (hunk) => line >= hunk.start && line <= hunk.end
       );
