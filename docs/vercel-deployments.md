@@ -89,6 +89,16 @@ whatever you point it at. The project is linked already (`.vercel/`).
 - OpenReview's own review webhook is unaffected: it reacts to GitHub events and
   clones the PR branch in a Vercel Sandbox, independent of Git deployments.
 
+## Trust model for on-demand previews
+
+The `Preview on demand` workflow refuses `main` (already deployed, so Vercel
+reuses the existing record) and requires the ref to be an exact branch or tag in
+this repository. A preview is a live instance of the bot and carries the
+production environment variables, so only run the workflow for refs you would be
+willing to see deployed. Anyone who can run it already has write access and could
+push the same code to any branch; the workflow exists to make the preview
+deliberate, not to widen access.
+
 ## Trade-off
 
 A branch that is not `main` and not `manual-preview` gets no Vercel preview at
