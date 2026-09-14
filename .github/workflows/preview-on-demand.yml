@@ -1,0 +1,162 @@
+name: Preview on demand
+
+# Automatic Vercel previews are disabled for every branch except `main`, because
+# they burned Hobby build/storage quota and CI already proves a change locally.
+# This workflow is the low-friction way to ask for a real Vercel preview when
+# one is genuinely wanted.
+#
+# How it works: it force-pushes the requested ref onto a single rolling branch
+# named exactly `manual-preview`. `vercel.json` lists that exact branch name as
+# enabled, so Vercel builds exactly that push and reports the URL back through
+# the GitHub Deployments API. No Vercel token and no CLI login are needed.
+#
+# Trust model: a preview is a live instance of the bot, and the deployment
+# carries the production environment variables. Anyone who can run a
+# workflow_dispatch already has write access and could push the same code to any
+# branch, so this workflow does not widen the blast radius; it exists to make the
+# preview deliberate rather than automatic. Run it only for refs you would be
+# willing to see deployed.
+#
+# Why an exact branch name and not `preview/**`: the exact name is what was
+# directly observed to deploy. Glob behaviour was not established, because
+# several probe branches shared one commit SHA and Vercel reuses an existing
+# deployment for an already-built SHA. See docs/vercel-deployments.md.
+#
+# Deleting the branch afterwards does not remove the deployment, so the preview
+# keeps working; the deployment expires on the project's normal retention.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Non-main branch or tag in this repo to preview.
+        required: true
+
+permissions:
+  contents: write
+  deployments: read
+
+concurrency:
+  group: preview-on-demand
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Validate the requested ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          # `main` is the production branch: Vercel has already built its
+          # commits, and re-pushing one creates no new deployment (Vercel reuses
+          # the existing record for a known SHA). Reject it up front.
+          if [[ "$REF" == "main" ]]; then
+            echo "::error::Refusing to preview 'main': it is already deployed to production and Vercel reuses the existing deployment for a known SHA. Pass a feature branch or tag instead."
+            exit 1
+          fi
+          # The ref must exist as an exact branch or tag in this repository.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/git/ref/$REF" || echo 000)
+          if [[ "$code" != "200" ]]; then
+            echo "::error::Ref '$REF' does not resolve to an exact branch or tag in $GITHUB_REPOSITORY (HTTP $code)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Stop if this commit already has a preview deployment
+        id: guard
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          # Vercel reuses a deployment for a SHA it has already built, so a
+          # second push of the same commit produces no new deployment and the
+          # poll below could never find one. Report the existing URL and stop.
+          deps=$(curl -sSL -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/deployments?sha=$sha&per_page=20" || echo '[]')
+          dep_id=$(printf '%s' "$deps" | jq -r 'if type=="array" then (map(select((.environment // "" | ascii_downcase)=="preview"))[0].id // "") else "" end' 2>/dev/null || echo "")
+          if [[ -n "$dep_id" ]]; then
+            st=$(curl -sSL -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/deployments/$dep_id/statuses?per_page=20" || echo '[]')
+            url=$(printf '%s' "$st" | jq -r 'if type=="array" then (map(select(.state=="success" and (.environment_url // "")!=""))[0].environment_url // "") else "" end' 2>/dev/null || echo "")
+            {
+              echo "### Vercel preview"
+              echo
+              echo "Commit \`$sha\` already has a preview deployment: ${url:-<no URL recorded>}"
+              echo
+              echo "Push a new commit if you need a fresh build for this ref."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "already-deployed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already-deployed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Point manual-preview at the requested ref
+        if: steps.guard.outputs.already-deployed == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "preview-bot"
+          git config user.email "preview-bot@users.noreply.github.com"
+          # Force-push so exactly one preview branch exists and always points at
+          # the newest requested revision.
+          git push --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            "HEAD:refs/heads/manual-preview"
+          echo "Pushed ${{ steps.guard.outputs.sha }} to manual-preview; Vercel will build it."
+
+      - name: Wait for the Vercel preview and report its URL
+        if: steps.guard.outputs.already-deployed == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.guard.outputs.sha }}
+        run: |
+          # No -e: a transient GitHub API error (secondary rate limit, 5xx) must
+          # not abort the poll; retry on the next iteration instead.
+          set -uo pipefail
+          deadline=$((SECONDS + 900))
+          url=""
+          while (( SECONDS < deadline )); do
+            deps=$(curl -sSL -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/deployments?sha=$SHA&per_page=20" 2>/dev/null || echo '[]')
+            dep_ids=$(printf '%s' "$deps" | jq -r 'if type=="array" then (map(select((.environment // "" | ascii_downcase)=="preview"))[].id|tostring) else empty end' 2>/dev/null)
+            for id in ${dep_ids:-}; do
+              st=$(curl -sSL -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=20" 2>/dev/null || echo '[]')
+              url=$(printf '%s' "$st" | jq -r 'if type=="array" then (map(select(.state=="success" and (.environment_url // "")!=""))[0].environment_url // "") else "" end' 2>/dev/null)
+              [[ -n "$url" ]] && break 2
+            done
+            sleep 20
+          done
+          if [[ -z "$url" ]]; then
+            echo "::error::No Vercel preview URL appeared within the timeout."
+            exit 1
+          fi
+          {
+            echo "### Vercel preview"
+            echo
+            echo "- Branch: \`manual-preview\`"
+            echo "- Commit: \`$SHA\`"
+            echo "- URL: $url"
+            echo
+            echo "Only the newest run's summary is authoritative; an earlier run's"
+            echo "summary can be superseded by a later preview of the same branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Preview ready: $url"

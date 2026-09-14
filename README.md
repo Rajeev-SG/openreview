@@ -71,6 +71,12 @@ sequenceDiagram
 
 Click the button above or clone this repo and deploy it to your Vercel account.
 
+> **In this repository**, `main` deploys to production automatically; automatic
+> previews are disabled for every other branch to avoid burning build quota.
+> Run the **Preview on demand** workflow (or `vercel deploy`) when you need a
+> preview. The policy and both escape hatches are in
+> [docs/vercel-deployments.md](docs/vercel-deployments.md).
+
 ### 2. Create a GitHub App
 
 Create a new [GitHub App](https://github.com/settings/apps/new) with the following configuration:
