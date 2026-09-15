@@ -200,6 +200,30 @@ describe("buildResolutionReport", () => {
     expect(report.unresolved[0].evidence).toContain("not at line 900");
   });
 
+  test("resolves a finding whose reported line is past the end of the file", () => {
+    // A line beyond the file's length can never be reached by a hunk, so
+    // enforcing it would pin the cycle blocked forever - the same class of
+    // defect as a non-positive line.
+    const report = buildResolutionReport({
+      ...base,
+      fileLineCounts: { "lib/a.ts": 40 },
+      findings: [finding({ id: "delta-1", line: 482, path: "lib/a.ts" })],
+    });
+    expect(report.resolved).toBe(true);
+    expect(report.entries[0].status).toBe("addressed");
+    expect(report.entries[0].evidence).toContain("past the file's 40 lines");
+  });
+
+  test("still requires the line when it exists in the file", () => {
+    const report = buildResolutionReport({
+      ...base,
+      fileLineCounts: { "lib/a.ts": 900 },
+      findings: [finding({ id: "F1", line: 500, path: "lib/a.ts" })],
+    });
+    expect(report.resolved).toBe(false);
+    expect(report.unresolved[0].evidence).toContain("not at line 500");
+  });
+
   test("leaves a finding unresolved when its file did not change", () => {
     const report = buildResolutionReport({
       ...base,
