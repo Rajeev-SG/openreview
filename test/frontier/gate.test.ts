@@ -158,6 +158,23 @@ describe("evaluateGate", () => {
     ).toBe(true);
   });
 
+  test("a 600k-char lockfile-only diff skips on low value, not unsafe size", () => {
+    // 600,000 diff chars is > 10x the default maxDiffChars (35,000), so the
+    // unsafe-diff path would refuse this PR if it were reached. The gate's
+    // documented precedence is that the low-value skip is decided before any
+    // unsafe-diff reasoning, so a lockfile-only dependency bump never parks.
+    const decision = evaluateGate({
+      config,
+      files: [file("uv.lock", { additions: 600_000, deletions: 0 })],
+      labels: [],
+    });
+    expect(decision.mode).toBe("skip");
+    expect(decision.overridden).toBe("force_skip");
+    expect(
+      decision.reasons.some((reason) => reason.signal === "low_value_only")
+    ).toBe(true);
+  });
+
   test("a lockfile bump plus a manifest change scores on the manifest signal", () => {
     const decision = evaluateGate({
       config,
