@@ -291,9 +291,18 @@ const collectUnsafeReasons = (input: PacketInput, diff: string): string[] => {
     );
   }
 
-  if (input.files.length > MAX_PACKET_FILES) {
+  // Count only the files that actually need review. The file ceiling exists to
+  // bound review scope, so breadth in low-value paths (generated output,
+  // vendored assets) is not a reviewability signal — the same reason the char
+  // cap excludes those sections. Counting raw files here would re-create the
+  // exact refusal this change removes, via the sibling check.
+  const reviewableFiles = input.files.filter(
+    (file) => !isLowValuePath(file.path)
+  );
+
+  if (reviewableFiles.length > MAX_PACKET_FILES) {
     reasons.push(
-      `${input.files.length} changed files exceeds the ${MAX_PACKET_FILES} file ceiling`
+      `${reviewableFiles.length} reviewable changed files exceeds the ${MAX_PACKET_FILES} file ceiling`
     );
   }
 

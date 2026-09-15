@@ -130,10 +130,10 @@ that the gate already treats as low value) are removed from the diff before it
 is sized, so a lockfile-heavy PR is judged on its reviewable code. The complete
 changed-file list is still sent, so every touched path remains visible.
 
-If the _reviewable_ diff is more than 10× the diff cap, or more than 80 files
-change, the packet is refused as `needs_manual_review` instead of being sent
-unrepresentative. A diff made large only by low-value churn is therefore not
-refused.
+If the _reviewable_ diff is more than 10× the diff cap, or more than 80
+_reviewable_ files change, the packet is refused as `needs_manual_review`
+instead of being sent unrepresentative. Both ceilings count only non-low-value
+paths, so churn confined to low-value files is not refused on either measure.
 
 ## 5. Model call
 

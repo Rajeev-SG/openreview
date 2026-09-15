@@ -218,6 +218,48 @@ index aaaaaaa..bbbbbbb 100644
     expect(packet.unsafe).toBe(false);
   });
 
+  test("many low-value files do not trip the file-count ceiling", () => {
+    // The sibling of the char cap: breadth in generated/asset paths must not
+    // refuse a PR whose reviewable change is one small source file.
+    const generated = Array.from({ length: 100 }, (_value, index) => ({
+      additions: 1,
+      deletions: 0,
+      path: `generated/schema-${index}.ts`,
+      status: "added" as const,
+    }));
+    const packet = buildPacket({
+      ...base,
+      diff: codeSection,
+      files: [
+        ...generated,
+        {
+          additions: 3,
+          deletions: 0,
+          path: "src/pipeline.py",
+          status: "modified",
+        },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(false);
+    expect(packet.reason).toBeUndefined();
+  });
+
+  test("more than 80 reviewable files is still refused", () => {
+    const packet = buildPacket({
+      ...base,
+      files: Array.from({ length: 90 }, (_value, index) => ({
+        additions: 1,
+        deletions: 0,
+        path: `src/module-${index}.ts`,
+        status: "modified" as const,
+      })),
+    });
+
+    expect(packet.unsafe).toBe(true);
+    expect(packet.reason).toContain("file ceiling");
+  });
+
   test("an oversized non-lockfile diff is still refused", () => {
     const packet = buildPacket({
       ...base,
