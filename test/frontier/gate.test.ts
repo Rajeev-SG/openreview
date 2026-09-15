@@ -144,6 +144,35 @@ describe("evaluateGate", () => {
   test("an empty diff is skipped", () => {
     expect(evaluateGate({ config, files: [], labels: [] }).mode).toBe("skip");
   });
+
+  test("a lockfile-only dependency bump is skipped with zero tokens", () => {
+    const decision = evaluateGate({
+      config,
+      files: [file("uv.lock", { additions: 20_000, deletions: 50 })],
+      labels: [],
+    });
+    expect(decision.mode).toBe("skip");
+    expect(decision.overridden).toBe("force_skip");
+    expect(
+      decision.reasons.some((reason) => reason.signal === "low_value_only")
+    ).toBe(true);
+  });
+
+  test("a lockfile bump plus a manifest change scores on the manifest signal", () => {
+    const decision = evaluateGate({
+      config,
+      files: [
+        file("uv.lock", { additions: 20_000, deletions: 50 }),
+        file("pyproject.toml", { additions: 2 }),
+      ],
+      labels: [],
+    });
+    expect(decision.mode).toBe("skip");
+    expect(decision.score).toBe(3);
+    expect(
+      decision.reasons.some((reason) => reason.signal === "dependency_manifest")
+    ).toBe(true);
+  });
 });
 
 describe("config parsing", () => {
