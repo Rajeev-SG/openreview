@@ -112,7 +112,7 @@ The packet sends intent + interfaces + evidence + changed implementation:
 Credential-shaped values are redacted. Caps (all overridable by env):
 
 ```
-MAX_PACKET_CHARS=50000       MAX_DIFF_CHARS=35000
+MAX_PACKET_CHARS=50000       MAX_DIFF_CHARS=350000
 MAX_CONTEXT_FILES=6          MAX_CONTEXT_PER_FILE_CHARS=4000
 MAX_PR_BODY_CHARS=4000       MAX_LINKED_ISSUE_CHARS=5000
 MAX_OUTPUT_TOKENS=3000
@@ -193,6 +193,7 @@ concurrent events, so duplicate or racing events cannot duplicate spend.
 FRONTIER_MAX_REVIEWS_PER_CYCLE=2     (clamped to 2, cannot be raised)
 FRONTIER_MAX_OUTPUT_TOKENS=3000
 FRONTIER_MAX_PACKET_CHARS=50000
+FRONTIER_MAX_DIFF_CHARS=350000
 FRONTIER_DAILY_BUDGET_USD=5
 FRONTIER_MONTHLY_BUDGET_USD=50
 FRONTIER_MAX_CALL_USD=0.5            (floor for the per-review reservation, > 0)
