@@ -11,7 +11,7 @@ export type EnvLike = Record<string, string | undefined>;
 export const DEFAULT_FRONTIER_LIMITS: FrontierLimits = {
   maxContextFiles: 6,
   maxContextPerFileChars: 4000,
-  maxDiffChars: 350_000,
+  maxDiffChars: 35_000,
   maxLinkedIssueChars: 5000,
   maxOutputTokens: 3000,
   maxPacketChars: 50_000,

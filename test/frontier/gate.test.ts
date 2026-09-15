@@ -198,7 +198,7 @@ describe("config parsing", () => {
   test("defaults match the issue contract", () => {
     const limits = readFrontierLimits({});
     expect(limits.maxPacketChars).toBe(50_000);
-    expect(limits.maxDiffChars).toBe(350_000);
+    expect(limits.maxDiffChars).toBe(35_000);
     expect(limits.maxContextFiles).toBe(6);
     expect(limits.maxContextPerFileChars).toBe(4000);
     expect(limits.maxPrBodyChars).toBe(4000);
