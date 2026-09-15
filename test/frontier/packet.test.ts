@@ -136,6 +136,111 @@ describe("buildPacket", () => {
   });
 });
 
+const pad = (chars: number): string => "+".padEnd(chars, "x");
+
+describe("buildPacket — mixed code + lockfile diffs", () => {
+  // A representative extraction PR: a huge machine-generated uv.lock plus a
+  // small hand-written source change. Lockfile churn must not make the packet
+  // unrepresentative when the reviewable code is small.
+  const lockfileSection = `diff --git a/uv.lock b/uv.lock
+index 1111111..2222222 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -1,1 +1,2 @@
+${pad(600_000)}
+`;
+  const codeSection = `diff --git a/src/pipeline.py b/src/pipeline.py
+index aaaaaaa..bbbbbbb 100644
+--- a/src/pipeline.py
++++ b/src/pipeline.py
+@@ -1,1 +1,2 @@
++def crawl():
++    return render()
+`;
+
+  test("excludes the lockfile diff but keeps the code diff and file list", () => {
+    const packet = buildPacket({
+      ...base,
+      diff: lockfileSection + codeSection,
+      files: [
+        { additions: 2740, deletions: 0, path: "uv.lock", status: "modified" },
+        {
+          additions: 2,
+          deletions: 0,
+          path: "src/pipeline.py",
+          status: "modified",
+        },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(false);
+    expect(packet.text).toContain("def crawl()");
+    // The machine-generated lockfile body is dropped from the diff.
+    expect(packet.text).not.toContain(pad(50));
+    // The changed-file list still names every touched path.
+    expect(packet.text).toContain("uv.lock");
+    expect(packet.text).toContain("src/pipeline.py");
+    expect(packet.stats.diffChars).toBeLessThan(
+      DEFAULT_FRONTIER_LIMITS.maxDiffChars
+    );
+  });
+
+  test("a mixed diff over 10x the cap is still reviewable, not refused", () => {
+    // 600k lockfile chars is > 10x the 35k cap; before the fix this refused the
+    // whole PR as unrepresentative even though only the lockfile was large.
+    const packet = buildPacket({
+      ...base,
+      diff: lockfileSection + codeSection,
+      files: [
+        { additions: 2740, deletions: 0, path: "uv.lock", status: "modified" },
+        {
+          additions: 2,
+          deletions: 0,
+          path: "src/pipeline.py",
+          status: "modified",
+        },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(false);
+    expect(packet.reason).toBeUndefined();
+  });
+
+  test("a lockfile-only oversized diff stays reviewable-empty, not refused", () => {
+    const packet = buildPacket({
+      ...base,
+      diff: lockfileSection,
+      files: [
+        { additions: 2740, deletions: 0, path: "uv.lock", status: "modified" },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(false);
+  });
+
+  test("an oversized non-lockfile diff is still refused", () => {
+    const packet = buildPacket({
+      ...base,
+      diff: `diff --git a/src/big.py b/src/big.py
+--- a/src/big.py
++++ b/src/big.py
+${"+".padEnd(600_000, "x")}
+`,
+      files: [
+        {
+          additions: 600_000,
+          deletions: 0,
+          path: "src/big.py",
+          status: "modified",
+        },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(true);
+    expect(packet.reason).toContain("raw diff");
+  });
+});
+
 describe("renderFindingsMarkdown", () => {
   test("renders each required field", () => {
     const markdown = renderFindingsMarkdown([finding()]);

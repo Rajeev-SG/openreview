@@ -66,6 +66,60 @@ describe("scenario A — trivial PR", () => {
   });
 });
 
+describe("scenario: mixed code + lockfile PR (ad-platform-intelligence #18 shape)", () => {
+  test("a huge lockfile does not refuse or skip the reviewable code", async () => {
+    // Regression for the motivating failure: a real code change plus a ~600k-char
+    // uv.lock diff was refused as `needs_manual_review` (`raw diff >10x cap`)
+    // before the fix. Now the gate scores the code, packet assembly drops the
+    // lockfile section, and review #1 runs once on a safe packet.
+    const lockfileSection = `diff --git a/uv.lock b/uv.lock
+--- a/uv.lock
++++ b/uv.lock
+@@ -1,1 +1,2 @@
+${"+".padEnd(600_000, "x")}
+`;
+    const codeSection = `diff --git a/src/pipeline/run.py b/src/pipeline/run.py
+--- a/src/pipeline/run.py
++++ b/src/pipeline/run.py
+@@ -1,1 +1,2 @@
++def run():
+`;
+
+    const harness = createHarness({
+      repo: {
+        diff: lockfileSection + codeSection,
+        files: [
+          {
+            additions: 2740,
+            deletions: 0,
+            path: "uv.lock",
+            status: "modified",
+          },
+          {
+            additions: 40,
+            deletions: 2,
+            path: "src/pipeline/run.py",
+            status: "modified",
+          },
+        ],
+      },
+      reviews: [clean],
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    // The code is judged; the packet is safe despite the oversized lockfile.
+    expect(outcome.status).toBe("passed");
+    expect(outcome.calls).toBe(1);
+    expect(harness.model.calls).toHaveLength(1);
+    expect(harness.model.calls[0]?.user).toContain("def run()");
+    expect(harness.model.calls[0]?.user).toContain("uv.lock");
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.conclusion).toBe("success");
+    expect(String(last?.summary)).not.toContain("could not be built safely");
+  });
+});
+
 describe("scenario B — meaningful clean PR", () => {
   test("required CI green then one clean review", async () => {
     const harness = createHarness({ reviews: [clean] });

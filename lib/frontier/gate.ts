@@ -275,9 +275,17 @@ const safeMatches = (path: string, pattern: string): boolean => {
 const matchesAny = (path: string, patterns: string[]): boolean =>
   patterns.some((pattern) => safeMatches(path, pattern));
 
-const isLowValue = (path: string): boolean =>
+/**
+ * Low-value paths (lockfiles, generated output, assets, ordinary docs) whose
+ * diffs carry no review signal on their own. Exported so packet assembly can
+ * exclude those sections from the diff it sends and measures, instead of either
+ * refusing a mixed code+lockfile PR as oversized or skipping it wholesale.
+ */
+export const isLowValuePath = (path: string): boolean =>
   matchesAny(path, LOW_VALUE_PATTERNS) &&
   !matchesAny(path, MATERIAL_DOC_PATTERNS);
+
+const isLowValue = (path: string): boolean => isLowValuePath(path);
 
 /**
  * Evaluate the deterministic gate. Returns a decision plus the human-readable
@@ -351,6 +359,13 @@ export const evaluateGate = (input: GateInput): GateDecision => {
   }
 
   // Pure docs / assets / lockfiles / generated output: zero frontier tokens.
+  //
+  // Ordering guarantee: this skip is decided here, before any packet is built.
+  // Oversized-diff refusal lives in packet assembly (`buildPacket`), which only
+  // runs after the gate returns `review`, so a lockfile-only PR can never trip
+  // the unsafe-size refusal. A *mixed* code + lockfile PR is not skipped here
+  // (not every file is low-value); instead packet assembly drops the low-value
+  // diff sections before sizing, so lockfile churn cannot refuse it either.
   const allLowValue = files.every((file) => isLowValue(file.path));
 
   if (allLowValue) {

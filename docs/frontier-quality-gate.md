@@ -83,6 +83,12 @@ Because most code changes include runtime files without matching tests, the
 practical skip set is: docs/asset/lockfile-only PRs, plus anything the repo
 explicitly lists under `never_review`.
 
+A **mixed** PR (reviewable code plus a lockfile or other low-value churn) is not
+force-skipped: the lockfile alone must not swallow the reviewable change. Such a
+PR is scored normally, and packet assembly drops the low-value file sections
+from the diff before sizing it (see §4), so machine-generated churn can neither
+skip real code nor refuse it as oversized.
+
 ## 3. Required CI gates the spend
 
 Before review #1 the engine resolves the repository's **configured required
@@ -119,9 +125,15 @@ MAX_OUTPUT_TOKENS=3000
 ```
 
 A truncated diff is always marked with an explicit banner — truncation is never
-silent. If the raw diff is more than 10× the diff cap, or more than 80 files
+silent. Low-value file sections (lockfiles, generated output and other paths
+that the gate already treats as low value) are removed from the diff before it
+is sized, so a lockfile-heavy PR is judged on its reviewable code. The complete
+changed-file list is still sent, so every touched path remains visible.
+
+If the _reviewable_ diff is more than 10× the diff cap, or more than 80 files
 change, the packet is refused as `needs_manual_review` instead of being sent
-unrepresentative.
+unrepresentative. A diff made large only by low-value churn is therefore not
+refused.
 
 ## 5. Model call
 
