@@ -1110,6 +1110,45 @@ const attemptFinalReview = async (
  * Writes the check only when the map changes, because every write produces a
  * `check_run` event that re-enters this function.
  */
+/**
+ * Fetch the head-revision line count of each file a blocking finding names.
+ *
+ * The resolution pass needs to know whether a reported line can exist at all:
+ * a line past the end of the repaired file is unsatisfiable, exactly like a
+ * non-positive line, and must not pin the cycle blocked forever. Best-effort:
+ * a missing file leaves the count undefined and the line is required as before.
+ */
+const readFileLineCounts = async (
+  deps: FrontierEngineDeps,
+  repo: string,
+  findings: FrontierFinding[],
+  ref: string
+): Promise<Record<string, number>> => {
+  const paths = [
+    ...new Set(
+      findings
+        .map((finding) => finding.path)
+        .filter(
+          (path): path is string => typeof path === "string" && path !== ""
+        )
+    ),
+  ];
+  const counts: Record<string, number> = {};
+
+  for (const path of paths) {
+    try {
+      const content = await deps.github.getFileContent(repo, path, ref);
+      if (content !== null) {
+        counts[path] = content.split("\n").length;
+      }
+    } catch {
+      // Best-effort; the line requirement stays in force without a count.
+    }
+  }
+
+  return counts;
+};
+
 const attemptResolution = async (
   deps: FrontierEngineDeps,
   state: FrontierPrState
@@ -1125,6 +1164,12 @@ const attemptResolution = async (
 
   const report: ResolutionReport = buildResolutionReport({
     changes: parseFileChanges(diff),
+    fileLineCounts: await readFileLineCounts(
+      deps,
+      state.repo,
+      blockingFindings(state.findings ?? []),
+      pr.headSha
+    ),
     findings: blockingFindings(state.findings ?? []),
     requiredCiGreen: ci.unknown ? false : ci.ok,
   });

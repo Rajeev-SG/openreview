@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { isLowValuePath } from "@/lib/frontier/gate";
 import type { GateChangedFile } from "@/lib/frontier/gate";
 import type {
   FrontierFinding,
@@ -252,18 +253,56 @@ const contextSections = (files: { path: string; text: string }[]): string[] => {
   return sections;
 };
 
-const collectUnsafeReasons = (input: PacketInput): string[] => {
+/**
+ * Drop the diff sections of low-value paths (lockfiles, generated output,
+ * assets) before the diff is sized or sent. A mixed code + lockfile PR would
+ * otherwise be refused as oversized purely because of machine-generated churn,
+ * even though the reviewable code is small. The complete changed-file list is
+ * still rendered, so the reviewer sees every touched path.
+ */
+const excludeLowValueDiffSections = (diff: string): string => {
+  if (!diff.includes("diff --git ")) {
+    return diff;
+  }
+
+  const parts = diff.split(/^(?=diff --git )/m);
+
+  const kept = parts.filter((part) => {
+    if (!part.startsWith("diff --git ")) {
+      // Preamble before the first section carries no path; keep it.
+      return true;
+    }
+
+    const match = /^diff --git a\/(.+?) b\/(.+)$/m.exec(part);
+    const path = match ? match[2] : "";
+
+    return path === "" || !isLowValuePath(path);
+  });
+
+  return kept.join("");
+};
+
+const collectUnsafeReasons = (input: PacketInput, diff: string): string[] => {
   const reasons: string[] = [];
 
-  if (input.diff.length > input.limits.maxDiffChars * UNSAFE_DIFF_RATIO) {
+  if (diff.length > input.limits.maxDiffChars * UNSAFE_DIFF_RATIO) {
     reasons.push(
-      `raw diff is ${input.diff.length} chars, >${UNSAFE_DIFF_RATIO}x the ${input.limits.maxDiffChars} cap`
+      `raw diff is ${diff.length} chars, >${UNSAFE_DIFF_RATIO}x the ${input.limits.maxDiffChars} cap`
     );
   }
 
-  if (input.files.length > MAX_PACKET_FILES) {
+  // Count only the files that actually need review. The file ceiling exists to
+  // bound review scope, so breadth in low-value paths (generated output,
+  // vendored assets) is not a reviewability signal — the same reason the char
+  // cap excludes those sections. Counting raw files here would re-create the
+  // exact refusal this change removes, via the sibling check.
+  const reviewableFiles = input.files.filter(
+    (file) => !isLowValuePath(file.path)
+  );
+
+  if (reviewableFiles.length > MAX_PACKET_FILES) {
     reasons.push(
-      `${input.files.length} changed files exceeds the ${MAX_PACKET_FILES} file ceiling`
+      `${reviewableFiles.length} reviewable changed files exceeds the ${MAX_PACKET_FILES} file ceiling`
     );
   }
 
@@ -276,14 +315,15 @@ const collectUnsafeReasons = (input: PacketInput): string[] => {
  * dropping local context first.
  */
 export const buildPacket = (input: PacketInput): Packet => {
-  const unsafeReasons = collectUnsafeReasons(input);
+  const reviewableDiff = excludeLowValueDiffSections(input.diff);
+  const unsafeReasons = collectUnsafeReasons(input, reviewableDiff);
 
   const body = truncate(input.body, input.limits.maxPrBodyChars);
   const issue = truncate(
     input.linkedIssue?.body ?? "",
     input.limits.maxLinkedIssueChars
   );
-  const diff = truncate(input.diff, input.limits.maxDiffChars);
+  const diff = truncate(reviewableDiff, input.limits.maxDiffChars);
   const context = clipContext(input.contextFiles, input.limits);
 
   const head = [
@@ -314,14 +354,14 @@ export const buildPacket = (input: PacketInput): Packet => {
     reason: unsafeReasons.length > 0 ? unsafeReasons.join("; ") : undefined,
     stats: {
       contextFiles: context.files.length,
-      diffChars: Math.min(input.diff.length, input.limits.maxDiffChars),
+      diffChars: Math.min(reviewableDiff.length, input.limits.maxDiffChars),
       totalChars: text.length,
       truncated:
         body.truncated ||
         issue.truncated ||
         diff.truncated ||
         context.truncated ||
-        input.diff.length > input.limits.maxDiffChars,
+        reviewableDiff.length > input.limits.maxDiffChars,
     },
     text,
     unsafe: unsafeReasons.length > 0,

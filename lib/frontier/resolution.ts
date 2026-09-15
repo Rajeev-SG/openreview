@@ -200,6 +200,12 @@ const describe = (match: PathMatch): string =>
 export const buildResolutionReport = (input: {
   changes: FileChange[];
   findings: FrontierFinding[];
+  /**
+   * New-file line counts at the repaired head, keyed by path. A finding whose
+   * line is past the end of the file cannot be reached by any hunk, so the
+   * line requirement is unsatisfiable by construction — see below.
+   */
+  fileLineCounts?: Record<string, number>;
   requiredCiGreen: boolean;
 }): ResolutionReport => {
   const entries: ResolutionEntry[] = input.findings.map((finding) => {
@@ -233,11 +239,22 @@ export const buildResolutionReport = (input: {
     }
 
     const { line } = finding;
+    const lineCount = input.fileLineCounts?.[match.change.path];
 
-    // Only a real, positive line is a location the repair must reach. A
-    // non-positive line means "no specific line"; enforcing it would leave the
-    // finding permanently unresolvable and block the cycle forever.
-    if (line !== undefined && line > 0) {
+    // A line past the end of the file is the same class of defect as a
+    // non-positive line: no hunk can ever reach it, so enforcing it would leave
+    // the finding permanently unresolvable and block the cycle forever. The
+    // repair is verified by the file change plus green CI, and the evidence says
+    // so explicitly rather than implying the line was matched.
+    const lineBeyondFile =
+      line !== undefined &&
+      line > 0 &&
+      lineCount !== undefined &&
+      line > lineCount;
+
+    // Only a real, positive line inside the file is a location the repair must
+    // reach. A non-positive line means "no specific line".
+    if (line !== undefined && line > 0 && !lineBeyondFile) {
       const reached = match.change.hunks.some(
         (hunk) => line >= hunk.start && line <= hunk.end
       );
@@ -260,7 +277,10 @@ export const buildResolutionReport = (input: {
 
     return {
       ...base,
-      evidence: `${where} changed and required CI is green`,
+      evidence: lineBeyondFile
+        ? `${describe(match)} changed; the reported line ${line} is past the file's ` +
+          `${lineCount} lines, so it was verified by file change and green CI`
+        : `${where} changed and required CI is green`,
       status: "addressed",
     };
   });

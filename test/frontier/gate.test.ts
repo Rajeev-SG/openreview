@@ -144,6 +144,69 @@ describe("evaluateGate", () => {
   test("an empty diff is skipped", () => {
     expect(evaluateGate({ config, files: [], labels: [] }).mode).toBe("skip");
   });
+
+  test("a lockfile-only dependency bump is skipped with zero tokens", () => {
+    const decision = evaluateGate({
+      config,
+      files: [file("uv.lock", { additions: 20_000, deletions: 50 })],
+      labels: [],
+    });
+    expect(decision.mode).toBe("skip");
+    expect(decision.overridden).toBe("force_skip");
+    expect(
+      decision.reasons.some((reason) => reason.signal === "low_value_only")
+    ).toBe(true);
+  });
+
+  test("a huge lockfile-only change skips on low value, never reaching packet sizing", () => {
+    // The gate never sees the diff text, so a lockfile-only change skips on the
+    // low-value path regardless of how large its diff is. The 600,000-char diff
+    // itself is covered end-to-end in packet.test.ts ("mixed code + lockfile
+    // diffs"), which is where the unsafe-size refusal actually lives.
+    const decision = evaluateGate({
+      config,
+      files: [file("uv.lock", { additions: 600_000, deletions: 0 })],
+      labels: [],
+    });
+    expect(decision.mode).toBe("skip");
+    expect(decision.overridden).toBe("force_skip");
+    expect(
+      decision.reasons.some((reason) => reason.signal === "low_value_only")
+    ).toBe(true);
+  });
+
+  test("a mixed lockfile + manifest change is scored, not force-skipped", () => {
+    // The lockfile must not swallow the reviewable signal: a manifest-bearing
+    // change is not force-skipped, keeps its dependency_manifest reason, and
+    // follows ordinary scoring. Packet assembly then drops the lockfile diff
+    // section so its size cannot refuse the PR.
+    const decision = evaluateGate({
+      config,
+      files: [
+        file("uv.lock", { additions: 20_000, deletions: 50 }),
+        file("pyproject.toml", { additions: 2 }),
+      ],
+      labels: [],
+    });
+    expect(decision.overridden).not.toBe("force_skip");
+    expect(decision.score).toBe(3);
+    expect(
+      decision.reasons.some((reason) => reason.signal === "dependency_manifest")
+    ).toBe(true);
+  });
+
+  test("a mixed lockfile + source change is not treated as low-value-only", () => {
+    const decision = evaluateGate({
+      config,
+      files: [
+        file("uv.lock", { additions: 20_000, deletions: 50 }),
+        file("src/pipeline.py", { additions: 40, deletions: 2 }),
+      ],
+      labels: [],
+    });
+    expect(decision.mode).toBe("review");
+    expect(decision.overridden).toBeUndefined();
+  });
 });
 
 describe("config parsing", () => {
