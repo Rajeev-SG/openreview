@@ -329,6 +329,17 @@ calls**:
 6. The repository's required CI must be green (the `frontier-quality` check
    itself is excluded, as always).
 
+**Finding paths that are not repository files.** A finding whose `path` is not
+a file in the repository at the head ref (verified with a content read; the
+path is also not in the repair diff) can never be satisfied by any push - the
+actual case was a finding filed against `PR description / CI gate`. Enforcing
+the file-change requirement on it would block the cycle forever, the same
+defect class as a non-positive `line`. The resolver reports it as
+**not deterministically verifiable** instead of unresolved, which still
+requires an owner decision (fix by hand or `frontier-new-cycle`) but does not
+hold the check red on a condition no push can satisfy. The finding stays
+visible in the resolution map and the check summary.
+
 If all of these hold, `frontier-quality` is written as **success** and the PR can
 merge; the gate posts the resolution map as the audit trail. Otherwise the check
 stays **failure**, and its output lists exactly which findings are unresolved
@@ -344,9 +355,11 @@ What this does and does not prove: it proves the flagged file changed at the
 flagged location and that CI passed. It is **not** a semantic re-review - that
 was review #2's job, and the resolution pass deliberately never substitutes for
 one. A finding that names no file (an architectural or judgement finding), one
-whose stale `line` no longer matches the change, or a repair that only deletes
-the file, can never be auto-resolved: the PR stays blocked and the operator
-decides whether to fix it by hand or buy a new cycle with `frontier-new-cycle`.
+whose `path` is not a repository file, one whose stale `line` no longer matches
+the change, or a repair that only deletes the file, can never be auto-resolved:
+the PR stays blocked (or, for a non-file path, is surfaced as not
+deterministically verifiable) and the operator decides whether to fix it by
+hand or buy a new cycle with `frontier-new-cycle`.
 
 The pass is idempotent on a stable key - the head SHA plus the yes/no verdict -
 so a re-entering `check_run` event (every check write produces one) cannot loop,

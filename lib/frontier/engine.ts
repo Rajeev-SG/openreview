@@ -1123,7 +1123,7 @@ const readFileLineCounts = async (
   repo: string,
   findings: FrontierFinding[],
   ref: string
-): Promise<Record<string, number>> => {
+): Promise<{ counts: Record<string, number>; nonFilePaths: string[] }> => {
   const paths = [
     ...new Set(
       findings
@@ -1134,19 +1134,25 @@ const readFileLineCounts = async (
     ),
   ];
   const counts: Record<string, number> = {};
+  const nonFilePaths: string[] = [];
 
   for (const path of paths) {
     try {
       const content = await deps.github.getFileContent(repo, path, ref);
-      if (content !== null) {
-        counts[path] = content.split("\n").length;
+      if (content === null) {
+        // Not a file at the head ref - model output like "PR description /
+        // CI gate". No repair diff can ever match it, so the deterministic
+        // resolver must not hold the cycle blocked on it.
+        nonFilePaths.push(path);
+        continue;
       }
+      counts[path] = content.split("\n").length;
     } catch {
       // Best-effort; the line requirement stays in force without a count.
     }
   }
 
-  return counts;
+  return { counts, nonFilePaths };
 };
 
 const attemptResolution = async (
@@ -1162,15 +1168,17 @@ const attemptResolution = async (
     state.headSha
   );
 
+  const lineCounts = await readFileLineCounts(
+    deps,
+    state.repo,
+    blockingFindings(state.findings ?? []),
+    pr.headSha
+  );
   const report: ResolutionReport = buildResolutionReport({
     changes: parseFileChanges(diff),
-    fileLineCounts: await readFileLineCounts(
-      deps,
-      state.repo,
-      blockingFindings(state.findings ?? []),
-      pr.headSha
-    ),
+    fileLineCounts: lineCounts.counts,
     findings: blockingFindings(state.findings ?? []),
+    nonFileFindingPaths: new Set(lineCounts.nonFilePaths),
     requiredCiGreen: ci.unknown ? false : ci.ok,
   });
 
@@ -1198,10 +1206,13 @@ const attemptResolution = async (
           state.findings ?? []
         )}`,
         status: "completed",
-        summary:
-          "Blocking findings resolved without a frontier call: " +
-          `${report.entries.length} finding(s) show a changed file and green required CI. ` +
-          "This is a deterministic check, not a re-review.",
+        summary: `Blocking findings resolved without a frontier call: ${
+          report.entries.length - report.notVerifiable.length
+        } finding(s) show a changed file and green required CI${
+          report.notVerifiable.length
+            ? `; ${report.notVerifiable.length} finding(s) name a path that is not a repository file and are reported as not deterministically verifiable`
+            : ""
+        }. This is a deterministic check, not a re-review.`,
         title: "Frontier findings resolved (no re-review)",
       });
       await deps.github.postComment(
@@ -1213,6 +1224,8 @@ const attemptResolution = async (
           renderResolutionMarkdown(report),
           "",
           "Each blocking finding's file changed at the flagged location and required CI is green.",
+          "A finding whose path is not a repository file cannot be verified this way; it is listed",
+          "above as not deterministically verifiable and needs an owner decision.",
           "The paid review budget for this cycle stays spent; no new opinion was bought.",
           "",
           "This is a deterministic resolution check, not a semantic re-review. A finding that",

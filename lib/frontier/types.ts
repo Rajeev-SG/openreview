@@ -86,11 +86,13 @@ export interface ResolutionEntry {
   id: string;
   path?: string;
   severity: FrontierSeverity;
-  status: "addressed" | "unresolved";
+  status: "addressed" | "not_verifiable" | "unresolved";
 }
 
 export interface ResolutionReport {
   entries: ResolutionEntry[];
+  /** Findings whose path is not a repository file; never deterministically verifiable. */
+  notVerifiable: ResolutionEntry[];
   resolved: boolean;
   unresolved: ResolutionEntry[];
 }

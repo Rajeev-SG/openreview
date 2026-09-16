@@ -149,6 +149,12 @@ export interface PathMatch {
   mode: "basename" | "exact" | "normalised";
 }
 
+const STATUS_LABEL: Record<ResolutionEntry["status"], string> = {
+  addressed: "addressed",
+  not_verifiable: "**not deterministically verifiable**",
+  unresolved: "**unresolved**",
+};
+
 /**
  * Match a finding's `path` against the diff. The path comes from model output,
  * so tolerate a leading `./` and a wrong directory prefix when the basename is
@@ -206,6 +212,14 @@ export const buildResolutionReport = (input: {
    * line requirement is unsatisfiable by construction — see below.
    */
   fileLineCounts?: Record<string, number>;
+  /**
+   * Finding paths that are not repository files (verified by the caller
+   * against the head ref). No diff can ever match them, so enforcing the
+   * file-change requirement would block the cycle forever — the same defect
+   * class as a non-positive line. They are reported as not deterministically
+   * verifiable rather than left permanently blocking.
+   */
+  nonFileFindingPaths?: ReadonlySet<string>;
   requiredCiGreen: boolean;
 }): ResolutionReport => {
   const entries: ResolutionEntry[] = input.findings.map((finding) => {
@@ -225,6 +239,23 @@ export const buildResolutionReport = (input: {
     }
 
     const match = matchPath(finding.path, input.changes);
+
+    // A path that is neither in the repair diff nor a repository file (the
+    // caller verified it against the head ref) can never be satisfied by any
+    // push - model output like "PR description / CI gate". Holding the cycle
+    // blocked on it forever is the same defect class as a non-positive line.
+    // It is surfaced as not deterministically verifiable and needs an owner
+    // decision instead.
+    if (!match && input.nonFileFindingPaths?.has(finding.path)) {
+      return {
+        ...base,
+        evidence:
+          `\`${finding.path}\` is not a repository file, so no repair diff can ` +
+          "ever satisfy it — dispose of it by hand or start a new cycle with " +
+          "`frontier-new-cycle`",
+        status: "not_verifiable",
+      };
+    }
 
     if (!match) {
       return unresolved(
@@ -288,11 +319,17 @@ export const buildResolutionReport = (input: {
   const unresolvedEntries = entries.filter(
     (entry) => entry.status === "unresolved"
   );
+  const notVerifiable = entries.filter(
+    (entry) => entry.status === "not_verifiable"
+  );
 
   return {
     entries,
+    notVerifiable,
     // No blocking findings is not a resolution: a blocked cycle always has
-    // some, and an empty list means the state is inconsistent.
+    // some, and an empty list means the state is inconsistent. A finding
+    // whose path is not a repository file cannot block: it is surfaced as
+    // not_verifiable and needs an owner decision instead.
     resolved: entries.length > 0 && unresolvedEntries.length === 0,
     unresolved: unresolvedEntries,
   };
@@ -306,8 +343,6 @@ export const renderResolutionMarkdown = (report: ResolutionReport): string =>
       (entry) =>
         `| ${entry.id} | ${entry.severity} | ${
           entry.path ? `\`${entry.path}\`` : "-"
-        } | ${entry.status === "addressed" ? "addressed" : "**unresolved**"} | ${
-          entry.evidence
-        } |`
+        } | ${STATUS_LABEL[entry.status]} | ${entry.evidence} |`
     ),
   ].join("\n");

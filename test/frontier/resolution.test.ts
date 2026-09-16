@@ -447,3 +447,85 @@ describe("resolution pass after a BLOCK", () => {
     expect(harness.model.calls).toHaveLength(1);
   });
 });
+
+describe("non-file finding paths", () => {
+  const changes = parseFileChanges(diffWith("lib/a.ts"));
+  const base = { changes, requiredCiGreen: true };
+
+  test("reports a finding whose path is not a repository file as not verifiable", () => {
+    const report = buildResolutionReport({
+      ...base,
+      findings: [finding({ id: "F1", path: "PR description / CI gate" })],
+      nonFileFindingPaths: new Set(["PR description / CI gate"]),
+    });
+    expect(report.resolved).toBe(true);
+    expect(report.unresolved).toHaveLength(0);
+    expect(report.notVerifiable).toHaveLength(1);
+    expect(report.entries[0].status).toBe("not_verifiable");
+    expect(report.entries[0].evidence).toContain("not a repository file");
+    expect(renderResolutionMarkdown(report)).toContain(
+      "not deterministically verifiable"
+    );
+  });
+
+  test("a real file missing from the repair diff stays unresolved", () => {
+    const report = buildResolutionReport({
+      ...base,
+      findings: [finding({ id: "F1", path: "lib/b.ts" })],
+      nonFileFindingPaths: new Set(["lib/c.ts"]),
+    });
+    expect(report.resolved).toBe(false);
+    expect(report.unresolved.map((entry) => entry.id)).toEqual(["F1"]);
+  });
+
+  test("a not-verifiable finding does not mask an unresolved one", () => {
+    const report = buildResolutionReport({
+      ...base,
+      findings: [
+        finding({ id: "F1", path: "PR description / CI gate" }),
+        finding({ id: "F2", path: "lib/b.ts" }),
+      ],
+      nonFileFindingPaths: new Set(["PR description / CI gate"]),
+    });
+    expect(report.resolved).toBe(false);
+    expect(report.unresolved.map((entry) => entry.id)).toEqual(["F2"]);
+  });
+
+  test("a not-verifiable finding resolves alongside an addressed one", () => {
+    const report = buildResolutionReport({
+      ...base,
+      findings: [
+        finding({ id: "F1", path: "PR description / CI gate" }),
+        finding({ id: "F2", line: 2, path: "lib/a.ts" }),
+      ],
+      nonFileFindingPaths: new Set(["PR description / CI gate"]),
+    });
+    expect(report.resolved).toBe(true);
+    expect(report.unresolved).toHaveLength(0);
+  });
+});
+
+describe("engine resolution with a non-file finding path", () => {
+  test("a finding whose path is not a repository file no longer blocks the cycle", async () => {
+    const harness = createHarness({
+      reviews: [
+        changesRequired(),
+        changesRequired([
+          finding({ id: "F1", path: "PR description / CI gate" }),
+        ]),
+      ],
+    });
+    await driveToBlock(harness, [
+      finding({ id: "F1", path: "PR description / CI gate" }),
+    ]);
+
+    const outcome = await push(harness, "head0003");
+
+    expect(outcome.status).toBe("resolved");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
+    expect(harness.fakeGitHub.comments.at(-1)).toContain(
+      "not deterministically verifiable"
+    );
+    expect(harness.model.calls).toHaveLength(2);
+  });
+});
