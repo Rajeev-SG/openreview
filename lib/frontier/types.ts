@@ -121,12 +121,22 @@ export interface FrontierPrState {
   resolutionSha?: string;
   /** Head SHA the last owner-acknowledgement check was written for. */
   resolutionAckSha?: string;
+  /** Required-CI state the last resolution pass was evaluated against. */
+  resolutionCiGreen?: boolean;
   /**
    * Set when the owner acknowledged the not-deterministically-verifiable
    * findings with `frontier-ack-not-verifiable`; that, not a diff match, is
    * what clears a check whose remaining findings name no repository file.
    */
   notVerifiableAcknowledged?: boolean;
+  /**
+   * The final review's verdict for this cycle, remembered separately from
+   * `lifecycle`: transient states (waiting for CI, a parked owner decision)
+   * overwrite `lifecycle` but must not erase the fact that review #2 BLOCKed,
+   * or a later repair push would dead-end in the budget-spent branch instead
+   * of getting the deterministic resolution pass.
+   */
+  lastVerdict?: "blocked" | "passed";
   repo: string;
   reviewCount: number;
   reviews: FrontierReviewRecord[];

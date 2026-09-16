@@ -513,6 +513,38 @@ describe("engine resolution with a non-file finding path", () => {
     finding({ id: "F1", path: "PR description / CI gate" }),
   ];
 
+  test("block, push while CI is pending, CI completes: the resolution re-runs and clears", async () => {
+    const harness = createHarness({
+      reviews: [
+        changesRequired(),
+        changesRequired([finding({ id: "F2", line: 2, path: "lib/model.ts" })]),
+      ],
+    });
+    await driveToBlock(harness);
+
+    // The repair push arrives while required CI is still running: the
+    // deterministic pass runs but cannot clear the findings without green CI.
+    harness.fakeGitHub.state.checks = [
+      { conclusion: null, name: "ci", status: "in_progress" },
+    ];
+    const parked = await push(harness, "head0003");
+
+    expect(parked.status).toBe("blocked");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("failure");
+
+    // Required CI completes on the same head; the completed check_run event
+    // re-enters the engine, which must re-run the resolution pass rather than
+    // sitting on the stale failure.
+    harness.fakeGitHub.state.checks = [
+      { conclusion: "success", name: "ci", status: "completed" },
+    ];
+    const outcome = await push(harness, "head0003", "check_run");
+
+    expect(outcome.status).toBe("resolved");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
+    expect(harness.model.calls).toHaveLength(2);
+  });
+
   test("a non-file finding parks the check for an owner decision, then the ack clears it", async () => {
     const harness = createHarness({
       repo: { repoFiles: [] },
