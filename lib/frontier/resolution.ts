@@ -10,8 +10,10 @@ import type {
  * A cycle buys at most two paid reviews, so once review #2 BLOCKs the PR cannot
  * buy another opinion. The alternative to leaving a required check red forever
  * is to verify the *repair* deterministically: the flagged file must have
- * changed, the change must reach the flagged line when the finding names one,
- * the file must not simply have been deleted, and required CI must be green.
+ * changed, the file must not simply have been deleted, and required CI must be
+ * green. A finding's reported line is not enforced: a correct repair often sits
+ * elsewhere in the file (or the model's line was approximate), and requiring the
+ * edit to land on the exact line pinned cycles blocked with no way to clear them.
  * Nothing here calls a model.
  *
  * This proves the flagged file changed and CI passed. It does not prove the
@@ -207,12 +209,6 @@ export const buildResolutionReport = (input: {
   changes: FileChange[];
   findings: FrontierFinding[];
   /**
-   * New-file line counts at the repaired head, keyed by path. A finding whose
-   * line is past the end of the file cannot be reached by any hunk, so the
-   * line requirement is unsatisfiable by construction — see below.
-   */
-  fileLineCounts?: Record<string, number>;
-  /**
    * Finding paths that are not repository files (verified by the caller
    * against the head ref). No diff can ever match them, so enforcing the
    * file-change requirement would block the cycle forever — the same defect
@@ -269,49 +265,20 @@ export const buildResolutionReport = (input: {
       );
     }
 
-    const { line } = finding;
-    const lineCount = input.fileLineCounts?.[match.change.path];
-
-    // A line past the end of the file is the same class of defect as a
-    // non-positive line: no hunk can ever reach it, so enforcing it would leave
-    // the finding permanently unresolvable and block the cycle forever. The
-    // repair is verified by the file change plus green CI, and the evidence says
-    // so explicitly rather than implying the line was matched.
-    const lineBeyondFile =
-      line !== undefined &&
-      line > 0 &&
-      lineCount !== undefined &&
-      line > lineCount;
-
-    // Only a real, positive line inside the file is a location the repair must
-    // reach. A non-positive line means "no specific line".
-    if (line !== undefined && line > 0 && !lineBeyondFile) {
-      const reached = match.change.hunks.some(
-        (hunk) => line >= hunk.start && line <= hunk.end
-      );
-
-      if (!reached) {
-        return unresolved(
-          `${describe(match)} changed, but not at line ${line}`
-        );
-      }
-    }
-
     if (!input.requiredCiGreen) {
       return unresolved(
         `${describe(match)} changed, but required CI is not green`
       );
     }
 
-    const where =
-      line === undefined ? describe(match) : `${describe(match)} line ${line}`;
-
+    // The flagged line is deliberately not enforced: a repair that fixes the
+    // problem elsewhere in the file is still a repair, and the model's line is
+    // often approximate. Requiring the edit to touch the exact line left cycles
+    // blocked forever with no way to clear them, because review #2 was the last
+    // paid opinion. Verification here is file changed + required CI green.
     return {
       ...base,
-      evidence: lineBeyondFile
-        ? `${describe(match)} changed; the reported line ${line} is past the file's ` +
-          `${lineCount} lines, so it was verified by file change and green CI`
-        : `${where} changed and required CI is green`,
+      evidence: `${describe(match)} changed and required CI is green`,
       status: "addressed",
     };
   });
