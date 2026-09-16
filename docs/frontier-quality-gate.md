@@ -323,8 +323,10 @@ calls**:
 3. Every blocking finding must name a file that appears in the repair delta.
    Paths come from model output, so a leading `./` and an unambiguous wrong
    directory prefix are tolerated; the match mode is shown in the evidence.
-4. When the finding names a `line`, a changed hunk must actually cover that
-   line - touching the file elsewhere is not a repair.
+4. The finding's `line` is **not** enforced. A repair that fixes the problem
+   elsewhere in the file is still a repair, and the model's line is often
+   approximate; requiring the edit to touch the exact line left cycles blocked
+   with no way to clear them once the cycle's two paid reviews were spent.
 5. Deleting the flagged file is never a repair.
 6. The repository's required CI must be green (the `frontier-quality` check
    itself is excluded, as always).
@@ -358,15 +360,20 @@ and why.
 | F2 | P0 | - | unresolved | no file path; not deterministically verifiable |
 ```
 
-What this does and does not prove: it proves the flagged file changed at the
-flagged location and that CI passed. It is **not** a semantic re-review - that
-was review #2's job, and the resolution pass deliberately never substitutes for
-one. A finding that names no file (an architectural or judgement finding), one
-whose `path` is not a repository file, one whose stale `line` no longer matches
-the change, or a repair that only deletes the file, can never be auto-resolved:
-the PR stays blocked (a non-file path parks the check as action_required until
-the owner acknowledges with `frontier-ack-not-verifiable`) and the operator
-decides whether to fix it by hand or buy a new cycle with `frontier-new-cycle`.
+What this does and does not prove: it proves the flagged file changed and that
+required CI passed. It is **not** a semantic re-review - that was review #2's
+job, and the resolution pass deliberately never substitutes for one. A finding
+that names no file (an architectural or judgement finding), one whose `path` is
+not a repository file, or a repair that only deletes the file, can never be
+auto-resolved: the PR stays blocked (a non-file path parks the check as
+action_required until the owner acknowledges with `frontier-ack-not-verifiable`)
+and the operator decides whether to fix it by hand or buy a new cycle with
+`frontier-new-cycle`.
+
+The flagged `line` is deliberately not part of the proof (changed 2026-09-16,
+#28). Enforcing it meant a correct repair that sat elsewhere in the file - or a
+model line that was simply approximate - left the cycle blocked with no way to
+clear it, since review #2 is the last paid opinion and no third review will run.
 
 A cycle that was BLOCKed stays resolvable even after a transient state
 (waiting for required CI, a parked owner decision) overwrites `lifecycle`:

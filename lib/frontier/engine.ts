@@ -1216,7 +1216,7 @@ const writeResolutionOutcome = async (
         "",
         renderResolutionMarkdown(report),
         "",
-        "Each blocking finding's file changed at the flagged location and required CI is green.",
+        "Each blocking finding's file changed and required CI is green.",
         "The paid review budget for this cycle stays spent; no new opinion was bought.",
         "",
         "This is a deterministic resolution check, not a semantic re-review. A finding that",
