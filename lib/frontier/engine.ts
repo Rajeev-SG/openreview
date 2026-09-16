@@ -1114,16 +1114,8 @@ const attemptFinalReview = async (
  * `check_run` event that re-enters this function.
  */
 /**
- * Fetch the head-revision line count of each file a blocking finding names.
- *
- * The resolution pass needs to know whether a reported line can exist at all:
- * a line past the end of the repaired file is unsatisfiable, exactly like a
- * non-positive line, and must not pin the cycle blocked forever. Best-effort:
- * a missing file leaves the count undefined and the line is required as before.
- */
-/**
- * Line counts at the SHA the blocking findings refer to, plus the finding
- * paths that name no repository file at that ref.
+ * The finding paths that name no repository file at the SHA the blocking
+ * findings refer to.
  *
  * Classification is conservative in both directions. A path counts as
  * non-file only when the repository tree can be listed and the path matches
@@ -1133,12 +1125,12 @@ const attemptFinalReview = async (
  * cannot flip the finding to not-verifiable. Anything unreadable or
  * ambiguous keeps the finding blocking.
  */
-const readFileLineCounts = async (
+const readNonFileFindingPaths = async (
   deps: FrontierEngineDeps,
   repo: string,
   findings: FrontierFinding[],
   ref: string
-): Promise<{ counts: Record<string, number>; nonFilePaths: string[] }> => {
+): Promise<string[]> => {
   const paths = [
     ...new Set(
       findings
@@ -1148,7 +1140,6 @@ const readFileLineCounts = async (
         )
     ),
   ];
-  const counts: Record<string, number> = {};
   const unreadable: string[] = [];
 
   for (const path of paths) {
@@ -1156,22 +1147,20 @@ const readFileLineCounts = async (
       const content = await deps.github.getFileContent(repo, path, ref);
       if (content === null) {
         unreadable.push(path);
-        continue;
       }
-      counts[path] = content.split("\n").length;
     } catch {
-      // Best-effort; the line requirement stays in force without a count.
+      // Best-effort; an unreadable path keeps the finding blocking.
     }
   }
 
   if (unreadable.length === 0) {
-    return { counts, nonFilePaths: [] };
+    return [];
   }
 
   const files = await deps.github.listRepoFiles(repo, ref);
   if (files === "unknown") {
     // A listing we cannot trust must never widen the not-verifiable class.
-    return { counts, nonFilePaths: [] };
+    return [];
   }
 
   const basenames = new Map<string, number>();
@@ -1187,7 +1176,7 @@ const readFileLineCounts = async (
     return (basenames.get(base) ?? 0) === 0;
   });
 
-  return { counts, nonFilePaths };
+  return nonFilePaths;
 };
 
 /**
@@ -1282,7 +1271,7 @@ const writeResolutionOutcome = async (
     summary:
       `Blocked: ${report.unresolved.length} of ${report.entries.length} finding(s) not yet ` +
       `deterministically resolved${ci.unknown ? ` (${ci.unknown})` : ""}. ` +
-      "Push a repair that changes each flagged file at the flagged line; required CI must be green.",
+      "Push a repair that changes each flagged file; required CI must be green.",
     title: "Frontier final review blocked",
   });
 };
@@ -1332,7 +1321,7 @@ const attemptResolution = async (
     state.headSha
   );
 
-  const lineCounts = await readFileLineCounts(
+  const nonFilePaths = await readNonFileFindingPaths(
     deps,
     state.repo,
     blockingFindings(state.findings ?? []),
@@ -1343,9 +1332,8 @@ const attemptResolution = async (
   );
   const report: ResolutionReport = buildResolutionReport({
     changes: parseFileChanges(diff),
-    fileLineCounts: lineCounts.counts,
     findings: blockingFindings(state.findings ?? []),
-    nonFileFindingPaths: new Set(lineCounts.nonFilePaths),
+    nonFileFindingPaths: new Set(nonFilePaths),
     requiredCiGreen: ci.unknown ? false : ci.ok,
   });
   const ciGreen = !ci.unknown && ci.ok;

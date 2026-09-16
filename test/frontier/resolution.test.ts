@@ -191,37 +191,29 @@ describe("buildResolutionReport", () => {
     expect(report.entries[0].status).toBe("addressed");
   });
 
-  test("leaves a finding unresolved when the change misses the flagged line", () => {
+  test("addresses a repair that fixes the problem away from the flagged line", () => {
+    // A correct repair often sits elsewhere in the file than the line the model
+    // named, and the model's line is frequently approximate. Enforcing the line
+    // pinned blocked cycles with no way to clear them, since review #2 is the
+    // last paid opinion. Verification is file changed + required CI green.
     const report = buildResolutionReport({
       ...base,
       findings: [finding({ id: "F1", line: 900, path: "lib/a.ts" })],
     });
-    expect(report.resolved).toBe(false);
-    expect(report.unresolved[0].evidence).toContain("not at line 900");
+    expect(report.resolved).toBe(true);
+    expect(report.entries[0].status).toBe("addressed");
+    expect(report.entries[0].evidence).toContain(
+      "changed and required CI is green"
+    );
   });
 
-  test("resolves a finding whose reported line is past the end of the file", () => {
-    // A line beyond the file's length can never be reached by a hunk, so
-    // enforcing it would pin the cycle blocked forever - the same class of
-    // defect as a non-positive line.
+  test("addresses a finding whose reported line is past the end of the file", () => {
     const report = buildResolutionReport({
       ...base,
-      fileLineCounts: { "lib/a.ts": 40 },
       findings: [finding({ id: "delta-1", line: 482, path: "lib/a.ts" })],
     });
     expect(report.resolved).toBe(true);
     expect(report.entries[0].status).toBe("addressed");
-    expect(report.entries[0].evidence).toContain("past the file's 40 lines");
-  });
-
-  test("still requires the line when it exists in the file", () => {
-    const report = buildResolutionReport({
-      ...base,
-      fileLineCounts: { "lib/a.ts": 900 },
-      findings: [finding({ id: "F1", line: 500, path: "lib/a.ts" })],
-    });
-    expect(report.resolved).toBe(false);
-    expect(report.unresolved[0].evidence).toContain("not at line 500");
   });
 
   test("leaves a finding unresolved when its file did not change", () => {
@@ -305,7 +297,10 @@ describe("resolution pass after a BLOCK", () => {
     expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
   });
 
-  test("a repair that misses the flagged line stays blocked", async () => {
+  test("a repair that fixes the problem away from the flagged line clears the check", async () => {
+    // The flagged line is not enforced: a repair elsewhere in the file is still
+    // a repair, and requiring the exact line left cycles blocked with no way to
+    // clear them once the two paid reviews were spent.
     const harness = createHarness({
       reviews: [
         changesRequired(),
@@ -320,9 +315,9 @@ describe("resolution pass after a BLOCK", () => {
 
     const outcome = await push(harness, "head0003");
 
-    expect(outcome.status).toBe("blocked");
+    expect(outcome.status).toBe("resolved");
     expect(outcome.calls).toBe(0);
-    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("failure");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
   });
 
   test("a finding with no file path can never be auto-resolved", async () => {
