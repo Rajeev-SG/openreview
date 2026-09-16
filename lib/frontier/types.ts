@@ -121,6 +121,8 @@ export interface FrontierPrState {
   resolutionSha?: string;
   /** Head SHA the last owner-acknowledgement check was written for. */
   resolutionAckSha?: string;
+  /** Required-CI state the last resolution pass was evaluated against. */
+  resolutionCiGreen?: boolean;
   /**
    * Set when the owner acknowledged the not-deterministically-verifiable
    * findings with `frontier-ack-not-verifiable`; that, not a diff match, is

@@ -8,8 +8,8 @@ import {
   parseFileChanges,
   renderResolutionMarkdown,
 } from "@/lib/frontier/resolution";
-import { loadPrState, savePrState } from "@/lib/frontier/store";
-import type { FrontierPrState, FrontierReview } from "@/lib/frontier/types";
+import { loadPrState } from "@/lib/frontier/store";
+import type { FrontierReview } from "@/lib/frontier/types";
 
 import {
   createHarness,
@@ -513,7 +513,7 @@ describe("engine resolution with a non-file finding path", () => {
     finding({ id: "F1", path: "PR description / CI gate" }),
   ];
 
-  test("a repair push after a transient lifecycle overwrite still gets the resolution pass", async () => {
+  test("block, push while CI is pending, CI completes: the resolution re-runs and clears", async () => {
     const harness = createHarness({
       reviews: [
         changesRequired(),
@@ -522,18 +522,23 @@ describe("engine resolution with a non-file finding path", () => {
     });
     await driveToBlock(harness);
 
-    // A later event (e.g. the cycle parking while required CI runs) overwrote
-    // the blocked lifecycle. The verdict must survive it: a repair push must
-    // reach the deterministic resolution pass, not the budget-spent dead end.
-    const stored = (await loadPrState(
-      harness.kv,
-      "acme/widgets",
-      7
-    )) as FrontierPrState;
-    const waiting = { ...stored, lifecycle: "waiting_ci" as const };
-    await savePrState(harness.kv, waiting, new Date());
+    // The repair push arrives while required CI is still running: the
+    // deterministic pass runs but cannot clear the findings without green CI.
+    harness.fakeGitHub.state.checks = [
+      { conclusion: null, name: "ci", status: "in_progress" },
+    ];
+    const parked = await push(harness, "head0003");
 
-    const outcome = await push(harness, "head0003");
+    expect(parked.status).toBe("blocked");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("failure");
+
+    // Required CI completes on the same head; the completed check_run event
+    // re-enters the engine, which must re-run the resolution pass rather than
+    // sitting on the stale failure.
+    harness.fakeGitHub.state.checks = [
+      { conclusion: "success", name: "ci", status: "completed" },
+    ];
+    const outcome = await push(harness, "head0003", "check_run");
 
     expect(outcome.status).toBe("resolved");
     expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
