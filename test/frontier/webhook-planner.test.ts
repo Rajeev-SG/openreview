@@ -101,6 +101,16 @@ describe("planGitHubWebhook — automatic frontier path", () => {
     expect(
       plan("pull_request", {
         ...prPayload("labeled"),
+        label: { name: "frontier-ack-not-verifiable" },
+      })
+    ).toMatchObject({
+      event: { kind: "label", label: "frontier-ack-not-verifiable" },
+      kind: "frontier",
+    });
+
+    expect(
+      plan("pull_request", {
+        ...prPayload("labeled"),
         label: { name: "documentation" },
       }).kind
     ).toBe("ignore");
