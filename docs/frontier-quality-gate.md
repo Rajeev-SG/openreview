@@ -329,9 +329,27 @@ calls**:
 6. The repository's required CI must be green (the `frontier-quality` check
    itself is excluded, as always).
 
+**Finding paths that are not repository files.** A finding whose `path` is not
+a file in the repository at the reviewed SHA (verified with a content read
+**and** against the repository tree, using the same tolerances as the diff
+matcher - a leading `./`, an unambiguous basename) can never be satisfied by
+any push - the actual case was a finding filed against `PR description / CI
+gate`. Enforcing the file-change requirement on it would block the cycle
+forever, the same defect class as a non-positive `line`.
+
+Such findings are reported as **not deterministically verifiable**, and the
+check is written as **action_required** ("Frontier: owner decision required")
+instead of success or failure: the gate never clears itself on a condition it
+could not verify, and it never stays red on a condition no push can satisfy.
+The owner decides - fix by hand, or add the `frontier-ack-not-verifiable`
+label, which clears the check with the decision recorded as the audit trail.
+An untrustworthy repository listing (API failure, truncated tree) always keeps
+the finding blocking, and existence is checked at the reviewed SHA so a repair
+push that deletes the flagged file cannot flip the finding to not-verifiable.
+
 If all of these hold, `frontier-quality` is written as **success** and the PR can
 merge; the gate posts the resolution map as the audit trail. Otherwise the check
-stays **failure**, and its output lists exactly which findings are unresolved
+stays non-green, and its output lists exactly which findings are unresolved
 and why.
 
 ```
@@ -344,8 +362,10 @@ What this does and does not prove: it proves the flagged file changed at the
 flagged location and that CI passed. It is **not** a semantic re-review - that
 was review #2's job, and the resolution pass deliberately never substitutes for
 one. A finding that names no file (an architectural or judgement finding), one
-whose stale `line` no longer matches the change, or a repair that only deletes
-the file, can never be auto-resolved: the PR stays blocked and the operator
+whose `path` is not a repository file, one whose stale `line` no longer matches
+the change, or a repair that only deletes the file, can never be auto-resolved:
+the PR stays blocked (a non-file path parks the check as action_required until
+the owner acknowledges with `frontier-ack-not-verifiable`) and the operator
 decides whether to fix it by hand or buy a new cycle with `frontier-new-cycle`.
 
 The pass is idempotent on a stable key - the head SHA plus the yes/no verdict -

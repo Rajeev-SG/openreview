@@ -185,6 +185,12 @@ const createLiveGitHub = (
       await settle();
       return input.checkRuns;
     },
+    listRepoFiles: async () => {
+      await settle();
+      // The smoke harness has no repo tree to list; "unknown" keeps every
+      // finding blocking, which is the safe default for a smoke run.
+      return "unknown";
+    },
     postComment: async (_repo, _prNumber, body) => {
       await settle();
       checkUpdates.push({

@@ -9,6 +9,7 @@ export const FRONTIER_CHECK_NAME = "frontier-quality";
 export const FINAL_SIGNAL_LABEL = "frontier-ready-final";
 export const NEW_CYCLE_LABEL = "frontier-new-cycle";
 export const FORCE_REVIEW_LABEL = "frontier-review";
+export const ACK_NOT_VERIFIABLE_LABEL = "frontier-ack-not-verifiable";
 
 export type FrontierSeverity = "P0" | "P1" | "P2" | "P3";
 
@@ -86,11 +87,13 @@ export interface ResolutionEntry {
   id: string;
   path?: string;
   severity: FrontierSeverity;
-  status: "addressed" | "unresolved";
+  status: "addressed" | "not_verifiable" | "unresolved";
 }
 
 export interface ResolutionReport {
   entries: ResolutionEntry[];
+  /** Findings whose path is not a repository file; never deterministically verifiable. */
+  notVerifiable: ResolutionEntry[];
   resolved: boolean;
   unresolved: ResolutionEntry[];
 }
@@ -116,6 +119,14 @@ export interface FrontierPrState {
   resolutionResolved?: boolean;
   /** Head SHA the last resolution pass ran against, to avoid repeating it. */
   resolutionSha?: string;
+  /** Head SHA the last owner-acknowledgement check was written for. */
+  resolutionAckSha?: string;
+  /**
+   * Set when the owner acknowledged the not-deterministically-verifiable
+   * findings with `frontier-ack-not-verifiable`; that, not a diff match, is
+   * what clears a check whose remaining findings name no repository file.
+   */
+  notVerifiableAcknowledged?: boolean;
   repo: string;
   reviewCount: number;
   reviews: FrontierReviewRecord[];
