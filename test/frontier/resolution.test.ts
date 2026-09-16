@@ -8,8 +8,8 @@ import {
   parseFileChanges,
   renderResolutionMarkdown,
 } from "@/lib/frontier/resolution";
-import { loadPrState } from "@/lib/frontier/store";
-import type { FrontierReview } from "@/lib/frontier/types";
+import { loadPrState, savePrState } from "@/lib/frontier/store";
+import type { FrontierPrState, FrontierReview } from "@/lib/frontier/types";
 
 import {
   createHarness,
@@ -512,6 +512,33 @@ describe("engine resolution with a non-file finding path", () => {
   const nonFileFinding = [
     finding({ id: "F1", path: "PR description / CI gate" }),
   ];
+
+  test("a repair push after a transient lifecycle overwrite still gets the resolution pass", async () => {
+    const harness = createHarness({
+      reviews: [
+        changesRequired(),
+        changesRequired([finding({ id: "F2", line: 2, path: "lib/model.ts" })]),
+      ],
+    });
+    await driveToBlock(harness);
+
+    // A later event (e.g. the cycle parking while required CI runs) overwrote
+    // the blocked lifecycle. The verdict must survive it: a repair push must
+    // reach the deterministic resolution pass, not the budget-spent dead end.
+    const stored = (await loadPrState(
+      harness.kv,
+      "acme/widgets",
+      7
+    )) as FrontierPrState;
+    const waiting = { ...stored, lifecycle: "waiting_ci" as const };
+    await savePrState(harness.kv, waiting, new Date());
+
+    const outcome = await push(harness, "head0003");
+
+    expect(outcome.status).toBe("resolved");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
+    expect(harness.model.calls).toHaveLength(2);
+  });
 
   test("a non-file finding parks the check for an owner decision, then the ack clears it", async () => {
     const harness = createHarness({

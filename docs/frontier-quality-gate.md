@@ -368,6 +368,12 @@ the PR stays blocked (a non-file path parks the check as action_required until
 the owner acknowledges with `frontier-ack-not-verifiable`) and the operator
 decides whether to fix it by hand or buy a new cycle with `frontier-new-cycle`.
 
+A cycle that was BLOCKed stays resolvable even after a transient state
+(waiting for required CI, a parked owner decision) overwrites `lifecycle`:
+the final verdict is remembered in `lastVerdict`, and a repair push on such a
+cycle gets the deterministic resolution pass instead of dead-ending in the
+budget-spent branch.
+
 The pass is idempotent on a stable key - the head SHA plus the yes/no verdict -
 so a re-entering `check_run` event (every check write produces one) cannot loop,
 and evidence wording that changes without changing the verdict does not rewrite

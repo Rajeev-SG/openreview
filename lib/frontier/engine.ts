@@ -1031,6 +1031,7 @@ const attemptFinalReview = async (
 
   if (response.review.verdict === "pass" && blocking.length === 0) {
     state.lifecycle = "passed";
+    state.lastVerdict = "passed";
     const reported = response.review.findings;
     const blockingCount = blockingFindings(reported).length;
     await setCheck(deps, state, {
@@ -1054,6 +1055,7 @@ const attemptFinalReview = async (
   }
 
   state.lifecycle = "blocked";
+  state.lastVerdict = "blocked";
   await setCheck(deps, state, {
     conclusion: "failure",
     details: `${renderFindingsMarkdown(response.review.findings)}${findingsJson(
@@ -1381,6 +1383,7 @@ const attemptResolution = async (
   // posted. A retry re-runs the pass and converges on the same verdict.
   const result = resolutionResult(report, acknowledged);
   state.lifecycle = result.status;
+  state.lastVerdict = result.status === "resolved" ? "passed" : "blocked";
   state.resolution = report;
   state.resolutionResolved = report.resolved;
   state.resolutionSha = state.headSha;
@@ -1409,7 +1412,9 @@ const evaluate = async (
     // resolution pass instead of a dead end. A *passed* cycle is left alone -
     // its findings list is empty, so there is nothing to resolve.
     if (
-      (state.lifecycle === "blocked" || state.lifecycle === "resolved") &&
+      (state.lifecycle === "blocked" ||
+        state.lifecycle === "resolved" ||
+        state.lastVerdict === "blocked") &&
       state.finalReviewSha &&
       state.headSha !== state.finalReviewSha
     ) {
@@ -1432,7 +1437,9 @@ const evaluate = async (
     // It reports the cycle's own outcome, so it cannot be mistaken for a fresh
     // review that passed.
     const spentPassed =
-      state.lifecycle === "passed" || state.lifecycle === "resolved";
+      state.lifecycle === "passed" ||
+      state.lifecycle === "resolved" ||
+      state.lastVerdict === "passed";
 
     // Report the cycle's OWN outcome. This write REPLACES the check run, so a
     // blocked cycle must carry its real findings - hardcoding 0/0 contradicted
@@ -1520,6 +1527,7 @@ const handleLabel = (
     state.packetHashes = [];
     state.baselineSha = state.headSha;
     state.notVerifiableAcknowledged = undefined;
+    state.lastVerdict = undefined;
     state.lifecycle = "idle";
 
     emit(deps, "frontier.new_cycle", {

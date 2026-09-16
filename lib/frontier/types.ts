@@ -127,6 +127,14 @@ export interface FrontierPrState {
    * what clears a check whose remaining findings name no repository file.
    */
   notVerifiableAcknowledged?: boolean;
+  /**
+   * The final review's verdict for this cycle, remembered separately from
+   * `lifecycle`: transient states (waiting for CI, a parked owner decision)
+   * overwrite `lifecycle` but must not erase the fact that review #2 BLOCKed,
+   * or a later repair push would dead-end in the budget-spent branch instead
+   * of getting the deterministic resolution pass.
+   */
+  lastVerdict?: "blocked" | "passed";
   repo: string;
   reviewCount: number;
   reviews: FrontierReviewRecord[];
