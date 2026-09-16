@@ -1415,10 +1415,17 @@ const evaluate = async (
     // A blocked cycle that received a repair push gets the free deterministic
     // resolution pass instead of a dead end. A *passed* cycle is left alone -
     // its findings list is empty, so there is nothing to resolve.
+    //
+    // Eligibility keys on the findings still carrying blocking entries and a
+    // changed head, not on `lifecycle`: durable states written before
+    // `lastVerdict` existed can sit in any transient lifecycle (a CI wait, an
+    // owner-decision park) after review #2 BLOCKed, and keying on the
+    // lifecycle left those cycles dead-ending at the budget-spent check.
+    const hasBlockingFindings =
+      blockingFindings(state.findings ?? []).length > 0;
     if (
-      (state.lifecycle === "blocked" ||
-        state.lifecycle === "resolved" ||
-        state.lastVerdict === "blocked") &&
+      state.lifecycle !== "passed" &&
+      hasBlockingFindings &&
       state.finalReviewSha &&
       state.headSha !== state.finalReviewSha
     ) {

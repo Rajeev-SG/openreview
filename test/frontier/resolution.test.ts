@@ -8,7 +8,7 @@ import {
   parseFileChanges,
   renderResolutionMarkdown,
 } from "@/lib/frontier/resolution";
-import { loadPrState } from "@/lib/frontier/store";
+import { loadPrState, savePrState } from "@/lib/frontier/store";
 import type { FrontierReview } from "@/lib/frontier/types";
 
 import {
@@ -512,6 +512,33 @@ describe("engine resolution with a non-file finding path", () => {
   const nonFileFinding = [
     finding({ id: "F1", path: "PR description / CI gate" }),
   ];
+
+  test("a budget-spent cycle with blocking findings recovers on a repair push", async () => {
+    // Reproduces the production dead end: a durable state written before
+    // lastVerdict existed, parked in a transient lifecycle after review #2
+    // BLOCKed. Keying on the lifecycle left every push at the budget-spent
+    // check; the resolution pass must run instead.
+    const harness = createHarness({
+      reviews: [
+        changesRequired(),
+        changesRequired([finding({ id: "F2", line: 2, path: "lib/model.ts" })]),
+      ],
+    });
+    await driveToBlock(harness);
+
+    const stored = await loadPrState(harness.kv, "acme/widgets", 7);
+    const corrupted = {
+      ...(stored as NonNullable<typeof stored>),
+      lifecycle: "needs_manual_review" as const,
+    };
+    await savePrState(harness.kv, corrupted, new Date());
+
+    const outcome = await push(harness, "head0003");
+
+    expect(outcome.status).toBe("resolved");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
+    expect(harness.model.calls).toHaveLength(2);
+  });
 
   test("block, push while CI is pending, CI completes: the resolution re-runs and clears", async () => {
     const harness = createHarness({
