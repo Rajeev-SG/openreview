@@ -75,6 +75,13 @@ export interface FrontierGitHub {
     path: string,
     ref: string
   ) => Promise<string | null>;
+  /**
+   * Every blob path in the repository at `ref`, or "unknown" when the listing
+   * cannot be trusted (API failure, truncated tree). Used to distinguish a
+   * finding path that names no repository file from one that merely could not
+   * be read; "unknown" must keep findings blocking.
+   */
+  listRepoFiles: (repo: string, ref: string) => Promise<string[] | "unknown">;
   getLinkedIssue: (
     repo: string,
     prNumber: number

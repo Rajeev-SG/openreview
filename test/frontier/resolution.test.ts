@@ -458,7 +458,9 @@ describe("non-file finding paths", () => {
       findings: [finding({ id: "F1", path: "PR description / CI gate" })],
       nonFileFindingPaths: new Set(["PR description / CI gate"]),
     });
-    expect(report.resolved).toBe(true);
+    // Not resolved: an owner decision (frontier-ack-not-verifiable) is
+    // required before the check may clear.
+    expect(report.resolved).toBe(false);
     expect(report.unresolved).toHaveLength(0);
     expect(report.notVerifiable).toHaveLength(1);
     expect(report.entries[0].status).toBe("not_verifiable");
@@ -491,7 +493,7 @@ describe("non-file finding paths", () => {
     expect(report.unresolved.map((entry) => entry.id)).toEqual(["F2"]);
   });
 
-  test("a not-verifiable finding resolves alongside an addressed one", () => {
+  test("a not-verifiable finding keeps the cycle from a deterministic pass even alongside an addressed one", () => {
     const report = buildResolutionReport({
       ...base,
       findings: [
@@ -500,32 +502,81 @@ describe("non-file finding paths", () => {
       ],
       nonFileFindingPaths: new Set(["PR description / CI gate"]),
     });
-    expect(report.resolved).toBe(true);
+    expect(report.resolved).toBe(false);
     expect(report.unresolved).toHaveLength(0);
+    expect(report.notVerifiable).toHaveLength(1);
   });
 });
 
 describe("engine resolution with a non-file finding path", () => {
-  test("a finding whose path is not a repository file no longer blocks the cycle", async () => {
+  const nonFileFinding = [
+    finding({ id: "F1", path: "PR description / CI gate" }),
+  ];
+
+  test("a non-file finding parks the check for an owner decision, then the ack clears it", async () => {
     const harness = createHarness({
+      repo: { repoFiles: [] },
+      reviews: [changesRequired(), changesRequired(nonFileFinding)],
+    });
+    await driveToBlock(harness, nonFileFinding);
+
+    const outcome = await push(harness, "head0003");
+
+    expect(outcome.status).toBe("needs_manual_review");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe(
+      "action_required"
+    );
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.summary).toContain(
+      "Owner decision required"
+    );
+
+    const acked = await handleFrontierEvent(
+      harness.deps,
+      labelEvent("frontier-ack-not-verifiable", { headSha: "head0003" })
+    );
+
+    expect(acked.status).toBe("resolved");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.summary).toContain(
+      "Owner acknowledged"
+    );
+    expect(harness.fakeGitHub.comments.at(-1)).toContain(
+      "acknowledged by owner"
+    );
+    expect(harness.model.calls).toHaveLength(2);
+  });
+
+  test("an untrustworthy repo listing never waives a finding (null is not proof of non-existence)", async () => {
+    const harness = createHarness({
+      // repoFiles left unset: listRepoFiles reports "unknown".
+      reviews: [changesRequired(), changesRequired(nonFileFinding)],
+    });
+    await driveToBlock(harness, nonFileFinding);
+
+    const outcome = await push(harness, "head0003");
+
+    expect(outcome.status).toBe("blocked");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("failure");
+  });
+
+  test("a misnamed reference to a real, untouched repository file stays blocked", async () => {
+    // matchPath's basename tolerance must extend to the non-file classifier:
+    // `src/lib/other.ts` is not a path in this repo, but `lib/other.ts` is,
+    // and that file is not part of the repair diff.
+    const harness = createHarness({
+      repo: { repoFiles: ["lib/other.ts", "README.md"] },
       reviews: [
         changesRequired(),
-        changesRequired([
-          finding({ id: "F1", path: "PR description / CI gate" }),
-        ]),
+        changesRequired([finding({ id: "F1", path: "src/lib/other.ts" })]),
       ],
     });
     await driveToBlock(harness, [
-      finding({ id: "F1", path: "PR description / CI gate" }),
+      finding({ id: "F1", path: "src/lib/other.ts" }),
     ]);
 
     const outcome = await push(harness, "head0003");
 
-    expect(outcome.status).toBe("resolved");
-    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("success");
-    expect(harness.fakeGitHub.comments.at(-1)).toContain(
-      "not deterministically verifiable"
-    );
-    expect(harness.model.calls).toHaveLength(2);
+    expect(outcome.status).toBe("blocked");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.conclusion).toBe("failure");
   });
 });

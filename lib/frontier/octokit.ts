@@ -98,6 +98,36 @@ export const createOctokitFrontierGitHub = (
     }
   };
 
+  /**
+   * Every blob path in the repository at `ref`, or "unknown" when the listing
+   * cannot be trusted (API failure, truncated tree). "unknown" must keep
+   * findings blocking: an untrustworthy listing must never widen the
+   * not-verifiable class.
+   */
+  const listRepoFiles = async (
+    repo: string,
+    ref: string
+  ): Promise<string[] | "unknown"> => {
+    const { owner, repo: name } = split(repo);
+    try {
+      const clientValue = await client();
+      const { data } = await clientValue.rest.git.getTree({
+        owner,
+        recursive: "true",
+        repo: name,
+        tree_sha: ref,
+      });
+      if (data.truncated) {
+        return "unknown";
+      }
+      return data.tree
+        .filter((entry) => entry.type === "blob" && entry.path)
+        .map((entry) => entry.path as string);
+    } catch {
+      return "unknown";
+    }
+  };
+
   return {
     getChangedFiles: async (
       repo: string,
@@ -118,7 +148,6 @@ export const createOctokitFrontierGitHub = (
         status: file.status,
       }));
     },
-
     getDeltaDiff: async (
       repo: string,
       fromSha: string,
@@ -318,6 +347,8 @@ export const createOctokitFrontierGitHub = (
         status: run.status,
       }));
     },
+
+    listRepoFiles,
 
     postComment: async (
       repo: string,

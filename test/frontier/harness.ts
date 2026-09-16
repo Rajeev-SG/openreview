@@ -29,6 +29,8 @@ export interface FakeRepoState {
   deltaDiffs?: Record<string, string>;
   diff: string;
   fileContents?: Record<string, string>;
+  /** Repo tree listing; absent means the listing cannot be trusted. */
+  repoFiles?: string[];
   files: GateChangedFile[];
   issue?: LinkedIssue | null;
   pr: PullRequestView;
@@ -95,6 +97,10 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
     listCheckRuns: async () => {
       await yieldMicrotask();
       return state.checks;
+    },
+    listRepoFiles: async () => {
+      await yieldMicrotask();
+      return state.repoFiles ?? "unknown";
     },
     postComment: async (_repo, _prNumber, body) => {
       await yieldMicrotask();

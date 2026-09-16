@@ -35,6 +35,7 @@ import {
 } from "@/lib/frontier/store";
 import type { FrontierKv } from "@/lib/frontier/store";
 import {
+  ACK_NOT_VERIFIABLE_LABEL,
   FINAL_SIGNAL_LABEL,
   FORCE_REVIEW_LABEL,
   FRONTIER_CHECK_NAME,
@@ -1118,6 +1119,18 @@ const attemptFinalReview = async (
  * non-positive line, and must not pin the cycle blocked forever. Best-effort:
  * a missing file leaves the count undefined and the line is required as before.
  */
+/**
+ * Line counts at the SHA the blocking findings refer to, plus the finding
+ * paths that name no repository file at that ref.
+ *
+ * Classification is conservative in both directions. A path counts as
+ * non-file only when the repository tree can be listed and the path matches
+ * no file under the same tolerances the diff matcher applies (a leading
+ * `./`, an unambiguous basename). Existence is checked at the reviewed SHA,
+ * not the post-repair head, so a repair push that deletes the flagged file
+ * cannot flip the finding to not-verifiable. Anything unreadable or
+ * ambiguous keeps the finding blocking.
+ */
 const readFileLineCounts = async (
   deps: FrontierEngineDeps,
   repo: string,
@@ -1134,16 +1147,13 @@ const readFileLineCounts = async (
     ),
   ];
   const counts: Record<string, number> = {};
-  const nonFilePaths: string[] = [];
+  const unreadable: string[] = [];
 
   for (const path of paths) {
     try {
       const content = await deps.github.getFileContent(repo, path, ref);
       if (content === null) {
-        // Not a file at the head ref - model output like "PR description /
-        // CI gate". No repair diff can ever match it, so the deterministic
-        // resolver must not hold the cycle blocked on it.
-        nonFilePaths.push(path);
+        unreadable.push(path);
         continue;
       }
       counts[path] = content.split("\n").length;
@@ -1152,7 +1162,159 @@ const readFileLineCounts = async (
     }
   }
 
+  if (unreadable.length === 0) {
+    return { counts, nonFilePaths: [] };
+  }
+
+  const files = await deps.github.listRepoFiles(repo, ref);
+  if (files === "unknown") {
+    // A listing we cannot trust must never widen the not-verifiable class.
+    return { counts, nonFilePaths: [] };
+  }
+
+  const basenames = new Map<string, number>();
+  for (const file of files) {
+    const base = file.split("/").pop() ?? file;
+    basenames.set(base, (basenames.get(base) ?? 0) + 1);
+  }
+  const nonFilePaths = unreadable.filter((path) => {
+    const base = path.replace(/^\.\//, "").split("/").pop() ?? path;
+    // 0 matches: the path names no repository file, in any tolerated form.
+    // 1 match: the model misnamed a real file - keep the finding blocking.
+    // >1 matches: ambiguous - keep the finding blocking.
+    return (basenames.get(base) ?? 0) === 0;
+  });
+
   return { counts, nonFilePaths };
+};
+
+/**
+ * Writes the GitHub surfaces for one deterministic-resolution pass. The
+ * four outcomes: every finding addressed (success), owner-acknowledged
+ * not-verifiable findings (success, audit-trailed), not-verifiable findings
+ * awaiting an owner decision (action_required), or unresolved findings
+ * (failure).
+ */
+const writeResolutionOutcome = async (
+  deps: FrontierEngineDeps,
+  state: FrontierPrState,
+  report: ResolutionReport,
+  acknowledged: boolean,
+  ci: CiStatus
+): Promise<void> => {
+  const onlyNotVerifiable =
+    report.unresolved.length === 0 && report.notVerifiable.length > 0;
+
+  if (report.resolved) {
+    await setCheck(deps, state, {
+      conclusion: "success",
+      details: `${renderResolutionMarkdown(report)}${findingsJson(
+        state.findings ?? []
+      )}`,
+      status: "completed",
+      summary: `Blocking findings resolved without a frontier call: ${
+        report.entries.length - report.notVerifiable.length
+      } finding(s) show a changed file and green required CI. This is a deterministic check, not a re-review.`,
+      title: "Frontier findings resolved (no re-review)",
+    });
+    await deps.github.postComment(
+      state.repo,
+      state.prNumber,
+      [
+        "## Frontier: blocking findings resolved (no frontier call)",
+        "",
+        renderResolutionMarkdown(report),
+        "",
+        "Each blocking finding's file changed at the flagged location and required CI is green.",
+        "The paid review budget for this cycle stays spent; no new opinion was bought.",
+        "",
+        "This is a deterministic resolution check, not a semantic re-review. A finding that",
+        "needed judgement rather than a testable fix should be re-opened deliberately with",
+        "`frontier-new-cycle`.",
+      ].join("\n")
+    );
+    return;
+  }
+
+  if (acknowledged) {
+    await setCheck(deps, state, {
+      conclusion: "success",
+      details: `${renderResolutionMarkdown(report)}${findingsJson(
+        state.findings ?? []
+      )}`,
+      status: "completed",
+      summary: `Owner acknowledged ${report.notVerifiable.length} finding(s) whose path is not a repository file with the \`${ACK_NOT_VERIFIABLE_LABEL}\` label. This records the owner decision as the audit trail; it is not a deterministic verification and not a re-review.`,
+      title: "Frontier: not-verifiable findings acknowledged by owner",
+    });
+    await deps.github.postComment(
+      state.repo,
+      state.prNumber,
+      [
+        "## Frontier: not-verifiable findings acknowledged by owner",
+        "",
+        renderResolutionMarkdown(report),
+        "",
+        `The remaining finding(s) name no repository file, so no push can satisfy them. The \`${ACK_NOT_VERIFIABLE_LABEL}\``,
+        "label records the owner's decision to dispose of them; the check clears on that decision alone.",
+        "The paid review budget for this cycle stays spent; no new opinion was bought.",
+      ].join("\n")
+    );
+    return;
+  }
+
+  if (onlyNotVerifiable) {
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      details: renderResolutionMarkdown(report),
+      status: "completed",
+      summary: `${report.notVerifiable.length} finding(s) name a path that is not a repository file, so they cannot be verified deterministically. Owner decision required: dispose of them by hand, or add the \`${ACK_NOT_VERIFIABLE_LABEL}\` label to acknowledge and clear the check.`,
+      title: "Frontier: owner decision required",
+    });
+    return;
+  }
+
+  await setCheck(deps, state, {
+    conclusion: "failure",
+    details: renderResolutionMarkdown(report),
+    status: "completed",
+    summary:
+      `Blocked: ${report.unresolved.length} of ${report.entries.length} finding(s) not yet ` +
+      `deterministically resolved${ci.unknown ? ` (${ci.unknown})` : ""}. ` +
+      "Push a repair that changes each flagged file at the flagged line; required CI must be green.",
+    title: "Frontier final review blocked",
+  });
+};
+
+/**
+ * The durable outcome of a deterministic-resolution pass: every finding
+ * addressed, owner-acknowledged, parked for an owner decision, or blocked.
+ */
+const resolutionResult = (
+  report: ResolutionReport,
+  acknowledged: boolean
+): {
+  detail: string;
+  status: "blocked" | "needs_manual_review" | "resolved";
+} => {
+  if (report.resolved) {
+    return {
+      detail: "blocking findings resolved deterministically",
+      status: "resolved",
+    };
+  }
+  if (acknowledged) {
+    return {
+      detail: "not-verifiable findings acknowledged by owner",
+      status: "resolved",
+    };
+  }
+  if (report.unresolved.length === 0 && report.notVerifiable.length > 0) {
+    return {
+      detail: "owner decision required for not-verifiable findings",
+      status: "needs_manual_review",
+    };
+  }
+  return { detail: "resolution incomplete", status: "blocked" };
 };
 
 const attemptResolution = async (
@@ -1172,7 +1334,10 @@ const attemptResolution = async (
     deps,
     state.repo,
     blockingFindings(state.findings ?? []),
-    pr.headSha
+    // Existence is judged at the SHA the blocking findings refer to, not the
+    // post-repair head: a repair push that deletes the flagged file must not
+    // flip the finding to "not a repository file".
+    state.finalReviewSha || pr.headSha
   );
   const report: ResolutionReport = buildResolutionReport({
     changes: parseFileChanges(diff),
@@ -1182,16 +1347,25 @@ const attemptResolution = async (
     requiredCiGreen: ci.unknown ? false : ci.ok,
   });
 
+  const onlyNotVerifiable =
+    report.unresolved.length === 0 && report.notVerifiable.length > 0;
+  const acknowledged =
+    onlyNotVerifiable && state.notVerifiableAcknowledged === true;
+
   // Re-entry guard on a stable key: the head SHA plus the yes/no verdict. The
   // evidence text can change without the verdict changing (a transient CI
   // message, a different path-match mode), and rewriting the check for that
-  // would post another comment and re-enter this function for nothing.
+  // would post another comment and re-enter this function for nothing. The
+  // owner-acknowledgement check gets its own key so the label event always
+  // writes it exactly once per head.
   const unchanged =
     state.resolutionSha === state.headSha &&
-    state.resolutionResolved === report.resolved;
+    state.resolutionResolved === report.resolved &&
+    (!acknowledged || state.resolutionAckSha === state.headSha);
 
   emit(deps, "frontier.resolution", {
     addressed: report.entries.length - report.unresolved.length,
+    notVerifiable: report.notVerifiable.length,
     prNumber: state.prNumber,
     repo: state.repo,
     resolved: report.resolved,
@@ -1199,71 +1373,28 @@ const attemptResolution = async (
   });
 
   if (!unchanged) {
-    if (report.resolved) {
-      await setCheck(deps, state, {
-        conclusion: "success",
-        details: `${renderResolutionMarkdown(report)}${findingsJson(
-          state.findings ?? []
-        )}`,
-        status: "completed",
-        summary: `Blocking findings resolved without a frontier call: ${
-          report.entries.length - report.notVerifiable.length
-        } finding(s) show a changed file and green required CI${
-          report.notVerifiable.length
-            ? `; ${report.notVerifiable.length} finding(s) name a path that is not a repository file and are reported as not deterministically verifiable`
-            : ""
-        }. This is a deterministic check, not a re-review.`,
-        title: "Frontier findings resolved (no re-review)",
-      });
-      await deps.github.postComment(
-        state.repo,
-        state.prNumber,
-        [
-          "## Frontier: blocking findings resolved (no frontier call)",
-          "",
-          renderResolutionMarkdown(report),
-          "",
-          "Each blocking finding's file changed at the flagged location and required CI is green.",
-          "A finding whose path is not a repository file cannot be verified this way; it is listed",
-          "above as not deterministically verifiable and needs an owner decision.",
-          "The paid review budget for this cycle stays spent; no new opinion was bought.",
-          "",
-          "This is a deterministic resolution check, not a semantic re-review. A finding that",
-          "needed judgement rather than a testable fix should be re-opened deliberately with",
-          "`frontier-new-cycle`.",
-        ].join("\n")
-      );
-    } else {
-      await setCheck(deps, state, {
-        conclusion: "failure",
-        details: renderResolutionMarkdown(report),
-        status: "completed",
-        summary:
-          `Blocked: ${report.unresolved.length} of ${report.entries.length} finding(s) not yet ` +
-          `deterministically resolved${ci.unknown ? ` (${ci.unknown})` : ""}. ` +
-          "Push a repair that changes each flagged file at the flagged line; required CI must be green.",
-        title: "Frontier final review blocked",
-      });
-    }
+    await writeResolutionOutcome(deps, state, report, acknowledged, ci);
   }
 
   // State is written only after the GitHub writes succeed, so a failed check
   // write cannot leave durable state claiming a resolution that was never
   // posted. A retry re-runs the pass and converges on the same verdict.
-  state.lifecycle = report.resolved ? "resolved" : "blocked";
+  const result = resolutionResult(report, acknowledged);
+  state.lifecycle = result.status;
   state.resolution = report;
   state.resolutionResolved = report.resolved;
   state.resolutionSha = state.headSha;
+  if (acknowledged) {
+    state.resolutionAckSha = state.headSha;
+  }
 
   return {
     calls: 0,
     costUsd: 0,
     cycleId: state.cycleId,
-    detail: report.resolved
-      ? "blocking findings resolved deterministically"
-      : "resolution incomplete",
+    detail: result.detail,
     reviewCount: state.reviewCount,
-    status: report.resolved ? "resolved" : "blocked",
+    status: result.status,
   };
 };
 
@@ -1388,6 +1519,7 @@ const handleLabel = (
     state.finalSignalPending = false;
     state.packetHashes = [];
     state.baselineSha = state.headSha;
+    state.notVerifiableAcknowledged = undefined;
     state.lifecycle = "idle";
 
     emit(deps, "frontier.new_cycle", {
@@ -1397,6 +1529,29 @@ const handleLabel = (
     });
 
     return runFirstReview(deps, state, {}, now);
+  }
+
+  if (label === ACK_NOT_VERIFIABLE_LABEL) {
+    const outstanding = state.resolution?.notVerifiable ?? [];
+    if (
+      state.lifecycle !== "needs_manual_review" ||
+      (state.resolution?.unresolved.length ?? 0) > 0 ||
+      outstanding.length === 0
+    ) {
+      return settled({
+        calls: 0,
+        costUsd: 0,
+        cycleId: state.cycleId,
+        detail: "no not-verifiable findings to acknowledge",
+        reviewCount: state.reviewCount,
+        status: state.lifecycle,
+      });
+    }
+
+    // The owner accepts the disposal of the findings that name no repository
+    // file. attemptResolution writes the success check and the audit comment.
+    state.notVerifiableAcknowledged = true;
+    return attemptResolution(deps, state);
   }
 
   if (label === FINAL_SIGNAL_LABEL) {

@@ -328,9 +328,13 @@ export const buildResolutionReport = (input: {
     notVerifiable,
     // No blocking findings is not a resolution: a blocked cycle always has
     // some, and an empty list means the state is inconsistent. A finding
-    // whose path is not a repository file cannot block: it is surfaced as
-    // not_verifiable and needs an owner decision instead.
-    resolved: entries.length > 0 && unresolvedEntries.length === 0,
+    // whose path is not a repository file also keeps the cycle from a
+    // deterministic pass: it is surfaced as not_verifiable and needs an
+    // explicit owner decision (`frontier-ack-not-verifiable`) instead.
+    resolved:
+      entries.length > 0 &&
+      unresolvedEntries.length === 0 &&
+      notVerifiable.length === 0,
     unresolved: unresolvedEntries,
   };
 };
