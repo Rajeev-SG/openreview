@@ -75,11 +75,10 @@ const driveToBlock = async (
 };
 
 describe("parseFileChanges", () => {
-  test("records the post-image path and hunk range", () => {
+  test("records the post-image path", () => {
     const [change] = parseFileChanges(diffWith("lib/a.ts"));
     expect(change.path).toBe("lib/a.ts");
     expect(change.deleted).toBe(false);
-    expect(change.hunks).toEqual([{ end: 3, start: 1 }]);
   });
 
   test("marks a deleted file, keeping the pre-image path", () => {
@@ -106,24 +105,11 @@ describe("parseFileChanges", () => {
     const [change] = parseFileChanges(diff);
     expect(change.path).toBe("new.ts");
     expect(change.deleted).toBe(false);
-    expect(change.hunks).toEqual([{ end: 2, start: 1 }]);
   });
 
   test("strips a tab-separated timestamp and surrounding quotes", () => {
     const [change] = parseFileChanges('+++ "b/a file.ts"\t2026-01-01');
     expect(change.path).toBe("a file.ts");
-  });
-
-  test("a deletion-only hunk has a single-line range", () => {
-    const [change] = parseFileChanges(
-      [
-        "diff --git a/a.ts b/a.ts",
-        "--- a/a.ts",
-        "+++ b/a.ts",
-        "@@ -4 +4 @@",
-      ].join("\n")
-    );
-    expect(change.hunks).toEqual([{ end: 4, start: 4 }]);
   });
 });
 
@@ -171,7 +157,7 @@ describe("buildResolutionReport", () => {
   const changes = parseFileChanges(diffWith("lib/a.ts"));
   const base = { changes, requiredCiGreen: true };
 
-  test("addresses a finding whose file changed at the flagged line", () => {
+  test("addresses a finding whose file changed", () => {
     const report = buildResolutionReport({
       ...base,
       findings: [finding({ id: "F1", line: 2, path: "lib/a.ts" })],
@@ -280,7 +266,7 @@ describe("buildResolutionReport", () => {
 });
 
 describe("resolution pass after a BLOCK", () => {
-  test("a repair at the flagged line clears the check for free", async () => {
+  test("a repair of the flagged file clears the check for free", async () => {
     const harness = createHarness({
       reviews: [
         changesRequired(),

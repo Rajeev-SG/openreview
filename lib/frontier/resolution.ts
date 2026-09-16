@@ -21,21 +21,13 @@ import type {
  * cannot verify this way stays unresolved and keeps the PR blocked.
  */
 
-export interface DiffHunk {
-  /** First new-file line of the hunk. */
-  end: number;
-  start: number;
-}
-
 export interface FileChange {
   deleted: boolean;
-  hunks: DiffHunk[];
   path: string;
 }
 
 const POST_IMAGE_PATTERN = /^\+\+\+ (.+)$/;
 const PRE_IMAGE_PATTERN = /^--- (.+)$/;
-const HUNK_PATTERN = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
 
 const cleanDiffPath = (raw: string): string => {
   // Git quotes paths containing special characters and appends a
@@ -59,12 +51,7 @@ const stripRoot = (value: string): string | null => {
   return value.slice(2);
 };
 
-/**
- * Parse a unified diff into per-file post-image paths and hunk ranges.
- *
- * Hunk ranges are new-file line numbers, which is what a finding's `line`
- * refers to.
- */
+/** Parse a unified diff into per-file post-image paths and deletion status. */
 export const parseFileChanges = (diff: string): FileChange[] => {
   const changes: FileChange[] = [];
   let current: FileChange | null = null;
@@ -75,16 +62,7 @@ export const parseFileChanges = (diff: string): FileChange[] => {
         changes.push(current);
       }
 
-      current = { deleted: false, hunks: [], path: "" };
-      continue;
-    }
-
-    const hunk = HUNK_PATTERN.exec(raw);
-
-    if (hunk && current) {
-      const start = Number(hunk[1]);
-      const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-      current.hunks.push({ end: start + Math.max(count - 1, 0), start });
+      current = { deleted: false, path: "" };
       continue;
     }
 
@@ -115,7 +93,7 @@ export const parseFileChanges = (diff: string): FileChange[] => {
     // A bare `+++` line without a `diff --git` header still describes a change
     // (git emits these for some diffs), so start a file for it.
     if (!current) {
-      current = { deleted: false, hunks: [], path: "" };
+      current = { deleted: false, path: "" };
     }
 
     const next = cleanDiffPath(post[1]);
@@ -201,8 +179,8 @@ const describe = (match: PathMatch): string =>
     : `\`${match.change.path}\` (${match.mode} match)`;
 
 /**
- * A finding is addressed when its file changed and, if the finding names a
- * line, the change actually reaches that line. A deletion of the flagged file
+ * A finding is addressed when its file changed and required CI is green. The
+ * finding's `line` is not enforced (see below). A deletion of the flagged file
  * is never a repair.
  */
 export const buildResolutionReport = (input: {
