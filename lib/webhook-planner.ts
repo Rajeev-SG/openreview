@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 import type { FrontierEvent } from "@/lib/frontier/engine";
 import {
+  ACK_NOT_VERIFIABLE_LABEL,
   FINAL_SIGNAL_LABEL,
   FORCE_REVIEW_LABEL,
   NEW_CYCLE_LABEL,
@@ -19,6 +20,7 @@ export interface WebhookPlanInput {
 }
 
 const FRONTIER_LABELS = new Set([
+  ACK_NOT_VERIFIABLE_LABEL,
   FINAL_SIGNAL_LABEL,
   FORCE_REVIEW_LABEL,
   NEW_CYCLE_LABEL,
