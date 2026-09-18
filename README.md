@@ -8,7 +8,7 @@ An open-source, self-hosted AI code review bot. Deploy to Vercel, connect a GitH
 
 ## Features
 
-- **On-demand reviews** — Mention the app in any PR comment to trigger a review. The handle is your GitHub App's slug, e.g. `@openreview-property-search`. Powered by [Chat SDK](https://chat-sdk.dev)
+- **On-demand reviews** — Mention the app in any PR comment to trigger a review. The handle is your GitHub App's slug, e.g. `@rajeevs-openreview-bot`. Powered by [Chat SDK](https://chat-sdk.dev)
 - **Automatic frontier quality gate** — An optional bounded, deterministic-quality gate that judges agent-written PRs with at most two frontier-model calls per review cycle
 - **Sandboxed execution** — Runs in an isolated [Vercel Sandbox](https://vercel.com/docs/sandbox) with full repo access, including the ability to run linters, formatters, and tests
 - **Inline suggestions** — Posts line-level comments with GitHub suggestion blocks for one-click fixes
@@ -58,7 +58,7 @@ sequenceDiagram
     WH->>WF: Start new workflow run
 ```
 
-1. Mention the app's slug in a PR comment, e.g. `@openreview-property-search` (optionally with specific instructions)
+1. Mention the app's slug in a PR comment, e.g. `@rajeevs-openreview-bot` (optionally with specific instructions)
 2. OpenReview spins up a sandboxed environment and clones the repo on the PR branch
 3. A configured AI agent reviews the diff, explores the codebase, and runs project tooling
 4. The agent posts its findings as PR comments with inline suggestions
@@ -146,7 +146,7 @@ Fallback behavior:
 
 ### 4. Install the GitHub App
 
-Install the GitHub App on the repositories you want OpenReview to monitor. Once installed, mention the app's slug in any PR comment to trigger a review — the mention must match the App name exactly (`@openreview-property-search` for this deployment), because the adapter matches on the App slug, not on the repository name.
+Install the GitHub App on the repositories you want OpenReview to monitor. Once installed, mention the app's slug in any PR comment to trigger a review — the mention must match the App name exactly (`@rajeevs-openreview-bot` for this deployment), because the adapter matches on the App slug, not on the repository name.
 
 ## Automatic frontier quality gate
 
@@ -183,12 +183,12 @@ environment variables and operational traps:
 
 ## Usage
 
-**Trigger a review**: Comment the app's mention handle on any PR. The handle is the GitHub App slug — `@openreview-property-search` on this deployment. A bare `@openreview` will not match, because the adapter matches the configured App name exactly. You can include specific instructions:
+**Trigger a review**: Comment the app's mention handle on any PR. The handle is the GitHub App slug — `@rajeevs-openreview-bot` on this deployment. The handle must match the App slug exactly, because the adapter matches on it — a bare `@openreview` does not work, and GitHub reserves that name for an existing account, which is why this App is `rajeevs-openreview-bot`. You can include specific instructions:
 
 ```
-@openreview-property-search check for security vulnerabilities
-@openreview-property-search run the linter and fix any issues
-@openreview-property-search explain how the authentication flow works
+@rajeevs-openreview-bot check for security vulnerabilities
+@rajeevs-openreview-bot run the linter and fix any issues
+@rajeevs-openreview-bot explain how the authentication flow works
 ```
 
 **Reactions**: React with 👍 or ❤️ on an OpenReview comment to approve and apply its suggestions. React with 👎 or 😕 to skip.

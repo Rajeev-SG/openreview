@@ -12,7 +12,7 @@ scratch, and the traps that cost real time.
 | Production URL       | https://openreview-openrouter.vercel.app                                          |
 | Production branch    | `main` (Git-linked; merges to `main` deploy production automatically)             |
 | Durable state        | Upstash for Redis, resource `openreview-frontier-state`, exposed as `REDIS_URL`   |
-| GitHub App           | `openreview-property-search` (App ID `3141537`)                                   |
+| GitHub App           | `rajeevs-openreview-bot` (App ID `3141537`)                                       |
 | Installation         | `117789216`, fixed installation (not multi-tenant)                                |
 | Installed on         | **all** repositories of the `Rajeev-SG` account (`repository_selection: all`)     |
 | Judge model          | `z-ai/glm-5.3`                                                                    |
@@ -211,7 +211,7 @@ set) or `GET /app/hook/deliveries` instead of concluding "no webhook".
 - **Automatic:** open or update a PR. No mention needed.
 - **Manual (`@openreview` agent):** mention the App's slug — the handle is the
   App name, **not** the repository name. On this deployment that is
-  `@openreview-property-search`. A bare `@openreview` matches the adapter's
+  `@rajeevs-openreview-bot`. A bare `@openreview` matches the adapter's
   configured `userName`, finds no handler, and silently does nothing.
 
 ## Traps
