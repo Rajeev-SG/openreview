@@ -1,17 +1,25 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  canaryIsGatedRepo,
-  canaryNormalizeRepo,
-} from "@/lib/frontier/canary-probe";
+import { isRepoInSet, normalizeRepoName } from "@/lib/frontier/canary-probe";
 
-describe("canary probe", () => {
-  test("normalises and matches a gated repo", () => {
-    expect(canaryNormalizeRepo("  Rajeev-SG/OpenReview ")).toBe(
+describe("normalizeRepoName", () => {
+  test("lowercases and trims a repository name", () => {
+    expect(normalizeRepoName("  Rajeev-SG/OpenReview ")).toBe(
       "rajeev-sg/openreview"
     );
-    expect(
-      canaryIsGatedRepo("rajeev-sg/openreview", ["rajeev-sg/openreview"])
-    ).toBe(true);
+  });
+});
+
+describe("isRepoInSet", () => {
+  test("matches a declared repository", () => {
+    expect(isRepoInSet("rajeev-sg/openreview", ["rajeev-sg/openreview"])).toBe(
+      true
+    );
+  });
+
+  test("rejects a repository that is not declared", () => {
+    expect(isRepoInSet("rajeev-sg/other", ["rajeev-sg/openreview"])).toBe(
+      false
+    );
   });
 });
