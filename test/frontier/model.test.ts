@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   createOpenRouterFrontierModel,
+  FRONTIER_REASONING_TOKEN_ALLOWANCE,
   FrontierModelError,
   parseFrontierResponse,
   reviewJsonSchema,
@@ -111,6 +112,64 @@ describe("reviewJsonSchema", () => {
   });
 });
 
+const truncatedCompletionResponse = (): Response =>
+  Response.json({
+    choices: [
+      {
+        finish_reason: "length",
+        message: { content: '{"findings":[{"problem":"unterminated' },
+      },
+    ],
+    usage: { completion_tokens: 3000, cost: 0.01, prompt_tokens: 100 },
+  });
+
+describe("createOpenRouterFrontierModel — truncated/empty completions", () => {
+  test("a consistently truncated completion reports truncation, not a JSON parse error", async () => {
+    // Production shape: reasoning tokens consumed the budget, so the JSON was
+    // cut off mid-string on every attempt. The operator-visible cause must be
+    // the truncation, not an opaque "Unterminated string in JSON" that says
+    // nothing about why. Both attempts truncate, so the client gives up.
+    const fetchImpl = (async () => {
+      await Promise.resolve();
+      return truncatedCompletionResponse();
+    }) as unknown as typeof fetch;
+
+    const client = createOpenRouterFrontierModel({
+      apiKey: "k",
+      fetchImpl,
+      maxAttempts: 2,
+    });
+
+    const thrown = await client
+      .review({ maxTokens: 3000, system: "s", user: "u" })
+      .catch((error: unknown) => error);
+
+    expect((thrown as Error).message).toContain("truncated");
+    expect((thrown as Error).message).toContain("finish_reason=length");
+    expect((thrown as Error).message).not.toContain("Unterminated");
+  });
+
+  test("an empty completion names the finish reason so the cause is visible", async () => {
+    const fetchImpl = (async () => {
+      await Promise.resolve();
+      return Response.json({
+        choices: [{ finish_reason: "length", message: { content: "" } }],
+        usage: { completion_tokens: 11_000, prompt_tokens: 100 },
+      });
+    }) as unknown as typeof fetch;
+
+    const client = createOpenRouterFrontierModel({
+      apiKey: "k",
+      fetchImpl,
+      maxAttempts: 1,
+    });
+
+    await expect(
+      client.review({ maxTokens: 3000, system: "s", user: "u" })
+    ).rejects.toThrow(/empty completion \(finish_reason=length/);
+  });
+});
+
 describe("createOpenRouterFrontierModel", () => {
   test("pins model, reasoning, output cap, tools and reads exact cost", async () => {
     const { fetchImpl, request } = captureFetch({
@@ -131,7 +190,10 @@ describe("createOpenRouterFrontierModel", () => {
 
     const { payload } = request();
     expect(payload.model).toBe("z-ai/glm-5.3");
-    expect(payload.max_tokens).toBe(3000);
+    // The configured cap is the *answer* budget; the request adds headroom for
+    // hidden reasoning tokens, which share `max_tokens` and were truncating
+    // the JSON mid-string in production.
+    expect(payload.max_tokens).toBe(3000 + FRONTIER_REASONING_TOKEN_ALLOWANCE);
     expect(payload.tools).toBeUndefined();
     expect(payload.reasoning).toEqual({ effort: "low", exclude: true });
     expect(payload.provider).toEqual({ require_parameters: true });

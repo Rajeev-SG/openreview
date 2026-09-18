@@ -13,6 +13,7 @@ import type {
   FrontierGitHub,
 } from "@/lib/frontier/github";
 import {
+  FRONTIER_REASONING_TOKEN_ALLOWANCE,
   FRONTIER_SYSTEM_PROMPT,
   FrontierModelError,
 } from "@/lib/frontier/model";
@@ -144,7 +145,11 @@ const reservationFor = (deps: FrontierEngineDeps): number =>
   deriveReservationUsd(
     {
       inputUsdPerMTok: deps.budget.inputUsdPerMTok,
-      maxOutputTokens: deps.limits.maxOutputTokens,
+      // The request allows the configured answer budget plus the reasoning
+      // allowance, so the reservation must cover the same span: a ceiling that
+      // the request can exceed is not a ceiling.
+      maxOutputTokens:
+        deps.limits.maxOutputTokens + FRONTIER_REASONING_TOKEN_ALLOWANCE,
       maxPacketChars: deps.limits.maxPacketChars,
       outputUsdPerMTok: deps.budget.outputUsdPerMTok,
     },

@@ -172,7 +172,8 @@ const isPayloadError = (error: unknown): boolean => {
     // verdict. Observed in production (PR #31's final review), where treating
     // it as permanent stranded the PR in needs_manual_review for a transient
     // fault the second attempt would have passed.
-    error.message.startsWith("OpenRouter returned an empty completion")
+    error.message.startsWith("OpenRouter returned an empty completion") ||
+    error.message.startsWith("OpenRouter truncated the completion")
   );
 };
 
@@ -183,6 +184,20 @@ const extractJson = (content: string): unknown => {
     .replace(/```$/, "");
   return JSON.parse(trimmed.trim());
 };
+
+/**
+ * Headroom added on top of the configured output cap when asking the provider
+ * for tokens.
+ *
+ * `max_tokens` bounds reasoning *and* visible output together. A reasoning pass
+ * that runs long therefore truncates the JSON mid-string (observed in
+ * production as `Unterminated string in JSON at position 4714`) or, with no
+ * headroom at all, returns an empty completion. The configured
+ * `FRONTIER_MAX_OUTPUT_TOKENS` is the budget for the *answer*; this allowance
+ * is what the reasoning pass may additionally consume. It is deliberately not
+ * part of the spend reservation, which stays bounded by the configured caps.
+ */
+export const FRONTIER_REASONING_TOKEN_ALLOWANCE = 8000;
 
 const TRANSIENT_STATUS = new Set([
   408, 409, 425, 429, 500, 502, 503, 504, 522, 524,
@@ -198,6 +213,7 @@ export interface OpenRouterFrontierOptions {
 }
 
 interface OpenRouterChoice {
+  finish_reason?: string | null;
   message?: { content?: string | null };
 }
 
@@ -243,7 +259,7 @@ export const createOpenRouterFrontierModel = (
       "https://openrouter.ai/api/v1/chat/completions",
       {
         body: JSON.stringify({
-          max_tokens: request.maxTokens,
+          max_tokens: request.maxTokens + FRONTIER_REASONING_TOKEN_ALLOWANCE,
           messages: [
             { content: request.system, role: "system" },
             { content: request.user, role: "user" },
@@ -291,9 +307,24 @@ export const createOpenRouterFrontierModel = (
     }
 
     const content = data.choices?.[0]?.message?.content;
+    const finish = data.choices?.[0]?.finish_reason;
 
     if (!content) {
-      throw new Error("OpenRouter returned an empty completion");
+      throw new Error(
+        `OpenRouter returned an empty completion (finish_reason=${finish ?? "none"}, ` +
+          `completion_tokens=${data.usage?.completion_tokens ?? "?"})`
+      );
+    }
+
+    // A truncated answer is a provider-side budget outcome, not a verdict.
+    // Retrying is the correct response; parsing it as JSON only produces an
+    // "unterminated string" error that says nothing about the cause.
+    if (finish === "length") {
+      throw new Error(
+        `OpenRouter truncated the completion (finish_reason=length, ` +
+          `completion_tokens=${data.usage?.completion_tokens ?? "?"}); the ` +
+          "reasoning and answer together exceeded max_tokens"
+      );
     }
 
     return { content, usage: readUsage(data.usage, model) };
