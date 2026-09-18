@@ -3,7 +3,7 @@
  * to exercise the deployed gate end to end. Removed before merge.
  */
 export const canaryNormalizeRepo = (value: string): string =>
-  value.trim().replace(/\s+/g, " ").toLowerCase();
+  value.trim().replaceAll(/\s+/g, " ").toLowerCase();
 
 export const canaryIsGatedRepo = (
   repo: string,
