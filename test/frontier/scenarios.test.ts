@@ -900,6 +900,15 @@ describe("a spent review budget must still leave a check on the head", () => {
   });
 });
 
+const CODE_DIFF = [
+  "diff --git a/lib/policy.ts b/lib/policy.ts",
+  "--- a/lib/policy.ts",
+  "+++ b/lib/policy.ts",
+  "@@ -1,2 +1,2 @@",
+  "-const a = 1;",
+  "+const a = 2;",
+].join("\n");
+
 describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
   const codeFiles = [
     { additions: 10, deletions: 1, path: "lib/policy.ts", status: "modified" },
@@ -925,7 +934,7 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
             status: "completed",
           },
         ],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
         requiredAppIds: { verify: 15_368 },
@@ -952,7 +961,7 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
             status: "completed",
           },
         ],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
         requiredAppIds: { verify: 15_368 },
@@ -976,7 +985,7 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
             status: "completed",
           },
         ],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
       },
@@ -1001,7 +1010,7 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
           },
         ],
         config: "frontier:\n  required_checks:\n    - verify\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: [],
       },
@@ -1041,7 +1050,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
           },
         ],
         config: "frontier:\n  required_checks: []\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
         requiredAppIds: { verify: 15_368 },
@@ -1067,7 +1076,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
         ],
         config:
           "frontier:\n  required_checks:\n    - extra-lint\n  required_check_apps:\n    extra-lint: 15368\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
       },
@@ -1093,7 +1102,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
         ],
         config:
           "frontier:\n  required_checks:\n    - verify\n  required_check_apps:\n    verify: 15368\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: [],
       },
@@ -1118,7 +1127,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
         ],
         config:
           "frontier:\n  required_checks:\n    - verify\n  required_check_apps:\n    verify: 15368\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: [],
       },
@@ -1137,7 +1146,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
     const harness = createHarness({
       repo: {
         checks: [],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["ci/status"],
         statuses: [{ context: "ci/status", state: "success" }],
@@ -1154,7 +1163,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
     const harness = createHarness({
       repo: {
         checks: [],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["ci/status"],
         statuses: [{ context: "ci/status", state: "failure" }],
@@ -1188,7 +1197,7 @@ describe("scenario C1 — transient provider failure is recoverable (T12/T13)", 
         status: "completed",
       },
     ],
-    diff: "+code",
+    diff: CODE_DIFF,
     files: codeFiles,
     required: ["verify"],
     requiredAppIds: { verify: 15_368 },
@@ -1296,5 +1305,137 @@ describe("scenario C1 — transient provider failure is recoverable (T12/T13)", 
 
     expect(attempts).toBe(2);
     expect(response.review.verdict).toBe("pass");
+  });
+});
+
+describe("scenario C2 — no paid call for a non-substantive repair (T07)", () => {
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: CODE_DIFF,
+    files: [
+      {
+        additions: 10,
+        deletions: 1,
+        path: "lib/policy.ts",
+        status: "modified",
+      },
+      {
+        additions: 2,
+        deletions: 0,
+        path: "lib/policy.test.ts",
+        status: "modified",
+      },
+    ],
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  const changelogDiff = [
+    "diff --git a/CHANGELOG.md b/CHANGELOG.md",
+    "--- a/CHANGELOG.md",
+    "+++ b/CHANGELOG.md",
+    "@@ -1,2 +1,3 @@",
+    " entry",
+    "+another entry",
+  ].join("\n");
+
+  const lockfileOnlyDiff = [
+    "diff --git a/bun.lock b/bun.lock",
+    "--- a/bun.lock",
+    "+++ b/bun.lock",
+    "@@ -1,2 +1,2 @@",
+    "-a",
+    "+b",
+  ].join("\n");
+
+  const reviewWithFindings = () =>
+    createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One problem.",
+          verdict: "changes_required",
+        },
+      ],
+    });
+
+  const firstReview = async (harness: ReturnType<typeof createHarness>) => {
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+    expect(outcome.status).toBe("waiting_final_signal");
+    return harness;
+  };
+
+  const signal = (harness: ReturnType<typeof createHarness>, head: string) => {
+    harness.fakeGitHub.state.pr = {
+      ...harness.fakeGitHub.state.pr,
+      headSha: head,
+    };
+    return handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: head })
+    );
+  };
+
+  test("a changelog-only repair consumes no paid slot", async () => {
+    const harness = await firstReview(reviewWithFindings());
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..changelog1": changelogDiff,
+    };
+
+    const outcome = await signal(harness, "changelog1");
+
+    expect(outcome.calls).toBe(0);
+    expect(outcome.status).toBe("waiting_final_signal");
+    expect(harness.model.calls).toHaveLength(1);
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.title).toBe(
+      "Frontier final review skipped: no substantive repair"
+    );
+  });
+
+  test("a lockfile-only repair consumes no paid slot", async () => {
+    const harness = await firstReview(reviewWithFindings());
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..lockfile1": lockfileOnlyDiff,
+    };
+
+    const outcome = await signal(harness, "lockfile1");
+
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("an empty delta consumes no paid slot", async () => {
+    const harness = await firstReview(reviewWithFindings());
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..emptyhead1": "" };
+
+    const outcome = await signal(harness, "emptyhead1");
+
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("a later substantive repair still receives the final review", async () => {
+    const harness = await firstReview(reviewWithFindings());
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..changelog1": changelogDiff,
+      "head0001..realrepair": CODE_DIFF,
+    };
+
+    const refused = await signal(harness, "changelog1");
+    expect(refused.calls).toBe(0);
+
+    // The cycle is not stranded: a real fix gets the paid final review.
+    const reviewed = await signal(harness, "realrepair");
+
+    expect(reviewed.calls).toBe(1);
+    expect(harness.model.calls).toHaveLength(2);
   });
 });

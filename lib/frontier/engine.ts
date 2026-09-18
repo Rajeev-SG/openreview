@@ -22,6 +22,7 @@ import { buildPacket, renderFindingsMarkdown } from "@/lib/frontier/packet";
 import type { PacketContextFile } from "@/lib/frontier/packet";
 import {
   buildResolutionReport,
+  isSubstantiveRepair,
   parseFileChanges,
   renderResolutionMarkdown,
 } from "@/lib/frontier/resolution";
@@ -1053,6 +1054,34 @@ const attemptFinalReview = async (
   }
 
   const diff = await deps.github.getDeltaDiff(state.repo, from, pr.headSha);
+
+  // Refuse before reserving budget: a delta that carries no reviewable change
+  // must not consume one of the cycle's two paid slots. This is the
+  // changelog-only / amended-but-identical case, and it stays recoverable —
+  // a later substantive repair is reviewed normally.
+  if (!isSubstantiveRepair(diff)) {
+    state.lifecycle = "waiting_final_signal";
+    state.finalSignalPending = false;
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary:
+        "No substantive repair to review: the delta since review #1 contains " +
+        "no reviewable code change (only docs, lockfiles, assets or generated " +
+        "files, or nothing at all). No review slot was consumed. Push a real " +
+        `fix and re-add \`${FINAL_SIGNAL_LABEL}\`.`,
+      title: "Frontier final review skipped: no substantive repair",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: "no substantive repair delta",
+      reviewCount: state.reviewCount,
+      status: "waiting_final_signal",
+    };
+  }
+
   const packet = buildPacket({
     baseSha: from,
     body: pr.body,

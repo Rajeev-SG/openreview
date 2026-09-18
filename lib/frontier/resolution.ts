@@ -1,3 +1,4 @@
+import { isLowValuePath } from "@/lib/frontier/gate";
 import type {
   FrontierFinding,
   ResolutionEntry,
@@ -295,3 +296,29 @@ export const renderResolutionMarkdown = (report: ResolutionReport): string =>
         } | ${STATUS_LABEL[entry.status]} | ${entry.evidence} |`
     ),
   ].join("\n");
+
+/**
+ * Does this repair delta contain anything worth a paid re-review?
+ *
+ * A cycle buys at most two reviews, so the final review must not be spent on a
+ * delta that carries no reviewable change. Two shapes qualify:
+ *
+ * - an *empty* delta: the head moved but nothing changed between the two SHAs
+ *   (an amended or force-pushed-but-identical commit);
+ * - a *low-value-only* delta: only docs, lockfiles, assets or generated files
+ *   changed. A changelog-only commit is not a repaired defect.
+ *
+ * This is the same `isLowValuePath` the spend gate uses, so "not worth
+ * reviewing" means one thing in this codebase rather than two that disagree.
+ * Callers use it to refuse *before* reserving budget, so no paid slot is
+ * consumed and no model call is made.
+ */
+export const isSubstantiveRepair = (diff: string): boolean => {
+  const paths = parseChangedPaths(diff);
+
+  if (paths.length === 0) {
+    return false;
+  }
+
+  return paths.some((path) => !isLowValuePath(path));
+};
