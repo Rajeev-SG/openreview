@@ -1515,7 +1515,8 @@ describe("scenario C3 — repair-delta classification is not fooled (T07 follow-
 
     const outcome = await signal(harness, "mystery1");
 
-    expect(outcome.status).toBe("needs_manual_review");
+    // Recoverable, not parked: a transient API problem must not cost the cycle.
+    expect(outcome.status).toBe("waiting_final_signal");
     expect(harness.fakeGitHub.checkUpdates.at(-1)?.title).toBe(
       "Frontier final review could not verify the delta"
     );
@@ -1530,7 +1531,7 @@ describe("scenario C3 — repair-delta classification is not fooled (T07 follow-
 
     const outcome = await signal(harness, "unknown1");
 
-    expect(outcome.status).toBe("needs_manual_review");
+    expect(outcome.status).toBe("waiting_final_signal");
     expect(harness.model.calls).toHaveLength(1);
   });
 
@@ -1558,6 +1559,8 @@ describe("scenario C3 — repair-delta classification is not fooled (T07 follow-
     expect(title).toContain("deletion-only");
     expect(title).not.toContain("no substantive repair");
     expect(outcome.calls).toBe(0);
+    // Also recoverable, so the documented re-signal path works.
+    expect(outcome.status).toBe("waiting_final_signal");
   });
 
   test("T07-3: an explicit force-review is not swallowed by the substantiveness refusal", async () => {
@@ -1657,5 +1660,116 @@ describe("scenario C4 — force-review is honoured but stays inside the budget",
 
     // At most two paid calls in the cycle, however often the label is applied.
     expect(harness.model.calls.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("scenario C5 — the second signal is reconciled, not just presence-checked", () => {
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: CODE_DIFF,
+    files: [
+      {
+        additions: 10,
+        deletions: 1,
+        path: "lib/policy.ts",
+        status: "modified",
+      },
+      {
+        additions: 2,
+        deletions: 0,
+        path: "lib/policy.test.ts",
+        status: "modified",
+      },
+    ],
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  const withFindings = () =>
+    createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One problem.",
+          verdict: "changes_required",
+        },
+        { findings: [], summary: "Fine.", verdict: "pass" },
+      ],
+    });
+
+  const firstReview = async (harness: ReturnType<typeof createHarness>) => {
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+  };
+
+  const signal = (harness: ReturnType<typeof createHarness>, head: string) => {
+    harness.fakeGitHub.state.pr = {
+      ...harness.fakeGitHub.state.pr,
+      headSha: head,
+    };
+    return handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: head })
+    );
+  };
+
+  test("F1: a partially-parsed diff is reconciled against the signal", async () => {
+    // The diff parses to a low-value path only (a changelog hunk survived a
+    // truncated payload) while the compare API reports a real source change.
+    // Trusting the parse would refuse a genuine repair as "nothing changed".
+    const harness = withFindings();
+    await firstReview(harness);
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..partial01": [
+        "diff --git a/CHANGELOG.md b/CHANGELOG.md",
+        "--- a/CHANGELOG.md",
+        "+++ b/CHANGELOG.md",
+        "@@ -1,2 +1,3 @@",
+        " entry",
+        "+another entry",
+      ].join("\n"),
+    };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "CHANGELOG.md", status: "modified" },
+      { path: "lib/policy.ts", status: "modified" },
+    ];
+
+    const outcome = await signal(harness, "partial01");
+
+    const title = harness.fakeGitHub.checkUpdates.at(-1)?.title;
+    expect(title).not.toBe(
+      "Frontier final review skipped: no substantive repair"
+    );
+    expect(title).toBe("Frontier final review could not verify the delta");
+    expect(outcome.status).toBe("waiting_final_signal");
+  });
+
+  test("F3: an indeterminate refusal is recoverable by re-signalling", async () => {
+    const harness = withFindings();
+    await firstReview(harness);
+
+    // First attempt: the delta cannot be read.
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..retry001": "" };
+    harness.fakeGitHub.state.deltaFiles = "unknown";
+    const first = await signal(harness, "retry001");
+    expect(first.status).toBe("waiting_final_signal");
+    expect(harness.model.calls).toHaveLength(1);
+
+    // The API recovers; the same head now reports a real change.
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..retry001": CODE_DIFF };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "lib/policy.ts", status: "modified" },
+    ];
+    const second = await signal(harness, "retry001");
+
+    expect(second.calls).toBe(1);
+    expect(harness.model.calls).toHaveLength(2);
   });
 });

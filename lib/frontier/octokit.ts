@@ -28,6 +28,12 @@ const MAX_FILES = 500;
 const MAX_CHECK_RUNS = 100;
 /** Bounded page walk so a busy head cannot hide a required run behind the cap. */
 const MAX_CHECK_RUN_PAGES = 10;
+/**
+ * GitHub's compare endpoint returns at most this many files, with no
+ * pagination. A response at the cap may be truncated, so it is not treated as
+ * an exhaustive list.
+ */
+const COMPARE_FILE_CAP = 300;
 
 interface RepoParts {
   owner: string;
@@ -262,7 +268,18 @@ export const createOctokitFrontierGitHub = (
           { basehead: `${fromSha}...${toSha}`, owner, repo: name }
         );
 
-        return (data.files ?? []).map((file) => ({
+        const files = data.files ?? [];
+
+        // GitHub caps the compare endpoint's file list at 300 entries with no
+        // pagination. A capped list looks like a complete, plausible answer, so
+        // treating it as exhaustive could hide a substantive change beyond the
+        // cap. Report it as unknown and let the caller classify the delta as
+        // indeterminate rather than empty.
+        if (files.length >= COMPARE_FILE_CAP) {
+          return "unknown";
+        }
+
+        return files.map((file) => ({
           path: file.filename,
           status: file.status ?? "modified",
         }));

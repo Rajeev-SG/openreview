@@ -1048,11 +1048,17 @@ const refuseNonSubstantiveRepair = async (
   }
 
   if (substance.kind === "indeterminate") {
-    state.lifecycle = "needs_manual_review";
+    // An unreadable or disagreeing signal is often a transient API problem, so
+    // this stays RECOVERABLE exactly like the empty case: the signal is
+    // re-armed, so a later re-add re-enters this path and the promised
+    // "re-push the repair" actually works. Parking it in needs_manual_review
+    // made the summary's own instruction false and could cost a fresh cycle.
+    state.lifecycle = "waiting_final_signal";
+    state.finalSignalPending = false;
     await setCheck(deps, state, {
       conclusion: "action_required",
       status: "completed",
-      summary: `Frontier final review could not verify the repair delta: ${substance.reason}. No review slot was consumed. Re-push the repair, or start a new cycle with \`${NEW_CYCLE_LABEL}\`.`,
+      summary: `Frontier final review could not verify the repair delta: ${substance.reason}. No review slot was consumed. Re-add \`${FINAL_SIGNAL_LABEL}\` to retry once the delta can be read.`,
       title: "Frontier final review could not verify the delta",
     });
     return {
@@ -1061,14 +1067,15 @@ const refuseNonSubstantiveRepair = async (
       cycleId: state.cycleId,
       detail: `repair delta indeterminate: ${substance.reason}`,
       reviewCount: state.reviewCount,
-      status: "needs_manual_review",
+      status: "waiting_final_signal",
     };
   }
 
   if (substance.kind === "deletion_only") {
     // Removing the offending file is a legitimate repair. Say what happened
     // rather than claiming nothing changed.
-    state.lifecycle = "needs_manual_review";
+    state.lifecycle = "waiting_final_signal";
+    state.finalSignalPending = false;
     await setCheck(deps, state, {
       conclusion: "action_required",
       status: "completed",
@@ -1081,7 +1088,7 @@ const refuseNonSubstantiveRepair = async (
       cycleId: state.cycleId,
       detail: "deletion-only repair",
       reviewCount: state.reviewCount,
-      status: "needs_manual_review",
+      status: "waiting_final_signal",
     };
   }
 

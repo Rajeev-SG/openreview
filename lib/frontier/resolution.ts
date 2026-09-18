@@ -361,10 +361,25 @@ export const classifyRepairSubstance = (input: {
     };
   }
 
-  if (changes.length === 0 && input.fileSignal.length > 0) {
+  // Reconcile the two signals whenever the diff yields no substantive
+  // survivor — not only when it parses to zero changes. A truncated diff can
+  // still yield a low-value path (a changelog hunk that happened to parse)
+  // while the compare API knows a substantive file changed; trusting the parse
+  // there refuses a real repair and tells the author "nothing changed".
+  const signalSubstantive = input.fileSignal.filter(
+    (file) => !isLowValuePath(file.path)
+  );
+  const parsedPaths = new Set(changes.map((change) => change.path));
+  const signalOnly = signalSubstantive.filter(
+    (file) => !parsedPaths.has(file.path)
+  );
+
+  if (signalOnly.length > 0) {
     return {
       kind: "indeterminate",
-      reason: "the diff payload was empty but the compare API reports changes",
+      reason:
+        `the compare API reports substantive change(s) the diff did not show ` +
+        `(${signalOnly.map((file) => file.path).join(", ")})`,
     };
   }
 
