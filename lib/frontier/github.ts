@@ -25,6 +25,11 @@ export interface CheckRunView {
   status: string;
 }
 
+export interface CommitStatusView {
+  context: string;
+  state: string;
+}
+
 export interface LinkedIssue {
   body: string;
   number: number;
@@ -114,9 +119,20 @@ export interface FrontierGitHub {
     repo: string,
     baseBranch: string,
     ref: string,
-    perRepoChecks?: string[]
+    perRepoChecks?: string[],
+    perRepoAppIds?: Record<string, number>
   ) => Promise<RequiredChecksResult>;
   listCheckRuns: (repo: string, ref: string) => Promise<CheckRunView[]>;
+  /**
+   * Legacy commit statuses at `ref`, newest first. Branch protection can
+   * require a *commit status* context rather than a check run; those contexts
+   * are unsatisfiable by `listCheckRuns` alone, so they are resolved here
+   * instead of leaving the PR waiting forever for a run that never appears.
+   */
+  listCommitStatuses: (
+    repo: string,
+    ref: string
+  ) => Promise<CommitStatusView[]>;
   postComment: (repo: string, prNumber: number, body: string) => Promise<void>;
   setFrontierCheck: (update: FrontierCheckUpdate) => Promise<number>;
 }

@@ -166,6 +166,7 @@ const repoConfigSchema = z
     always_review: z.array(z.string()).optional(),
     enabled: z.boolean().optional(),
     never_review: z.array(z.string()).optional(),
+    required_check_apps: z.record(z.string(), z.number()).optional(),
     required_checks: z.array(z.string()).optional(),
     threshold: z.number().optional(),
   })
@@ -189,6 +190,13 @@ export interface FrontierRepoConfig {
    * that evaluates it.
    */
   requiredChecks?: string[];
+  /**
+   * Optional issuer pin per required context (`{ "verify": 15368 }`), so the
+   * per-repo policy can bind evidence to an App just as branch protection does.
+   * A context with no pin is accepted from any App, matching the platform's own
+   * behaviour for contexts that record no `app_id`.
+   */
+  requiredCheckApps?: Record<string, number>;
   threshold: number;
 }
 
@@ -237,6 +245,7 @@ export const parseRepoConfig = (
     alwaysReview: parsed.data.always_review ?? [],
     enabled: parsed.data.enabled ?? true,
     neverReview: parsed.data.never_review ?? [],
+    requiredCheckApps: parsed.data.required_check_apps,
     requiredChecks: parsed.data.required_checks,
     threshold: parsed.data.threshold ?? DEFAULT_REPO_CONFIG.threshold,
   };

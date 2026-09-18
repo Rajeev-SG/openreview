@@ -8,6 +8,7 @@ import {
 import type { GateChangedFile } from "@/lib/frontier/gate";
 import type {
   CheckRunView,
+  CommitStatusView,
   FrontierGitHub,
   LinkedIssue,
   PullRequestView,
@@ -263,7 +264,8 @@ export const createOctokitFrontierGitHub = (
       repo: string,
       baseBranch: string,
       _ref: string,
-      perRepoChecks?: string[]
+      perRepoChecks?: string[],
+      perRepoAppIds?: Record<string, number>
     ): Promise<RequiredChecksResult> => {
       // Precedence, most specific first:
       //   1. this repository's own committed policy (`required_checks:` in the
@@ -276,11 +278,23 @@ export const createOctokitFrontierGitHub = (
       // default: repositories do not share job names, so one global list both
       // over-gates unrelated repos and misses repos whose job is named
       // differently. It stays as an explicit operator escape hatch.
-      const explicit =
-        perRepoChecks === undefined ? requiredChecksOverride() : perRepoChecks;
+      // An explicit per-repo policy is authoritative even when empty: an empty
+      // array is a deliberate "this repository has no required CI", which must
+      // stay distinguishable from "not configured" (undefined). Collapsing the
+      // two silently applied branch protection to a repo that had declared it
+      // had none.
+      if (perRepoChecks !== undefined) {
+        return {
+          appIds: perRepoAppIds ?? {},
+          known: true,
+          names: withoutSelfCheck(perRepoChecks),
+        };
+      }
 
-      if (explicit.length > 0) {
-        return { known: true, names: withoutSelfCheck(explicit) };
+      const override = requiredChecksOverride();
+
+      if (override.length > 0) {
+        return { known: true, names: withoutSelfCheck(override) };
       }
 
       const { owner, repo: name } = split(repo);
@@ -302,14 +316,30 @@ export const createOctokitFrontierGitHub = (
           }
         }
 
-        return {
-          appIds,
-          known: true,
-          names: withoutSelfCheck([
-            ...contexts,
-            ...checks.map((check) => check.context),
-          ]),
-        };
+        // `contexts` are legacy commit-status contexts; `checks` are check
+        // runs. Only the latter can be satisfied by the check-run API, and
+        // commit-status matching is not implemented. Reporting a status-only
+        // context as required would park every PR until the wait expires and
+        // then fail closed, so it is surfaced as an unknown that needs
+        // configuration rather than an unsatisfiable requirement.
+        const checkNames = withoutSelfCheck(
+          checks.map((check) => check.context)
+        );
+        const statusOnly = withoutSelfCheck(contexts).filter(
+          (context) => !checkNames.includes(context)
+        );
+
+        if (statusOnly.length > 0) {
+          return {
+            known: false,
+            reason:
+              `required context(s) ${statusOnly.join(", ")} are commit statuses, ` +
+              "which this gate cannot verify (it reads check runs). Convert them " +
+              "to check runs, or declare `required_checks:` in the repo config.",
+          };
+        }
+
+        return { appIds, known: true, names: checkNames };
       } catch (error) {
         const { status, response } = error as {
           status?: number;
@@ -373,6 +403,23 @@ export const createOctokitFrontierGitHub = (
       }));
     },
 
+    listCommitStatuses: async (
+      repo: string,
+      ref: string
+    ): Promise<CommitStatusView[]> => {
+      const { owner, repo: name } = split(repo);
+      const clientValue = await client();
+      const { data } = await clientValue.request(
+        "GET /repos/{owner}/{repo}/commits/{ref}/status",
+        { owner, per_page: MAX_CHECK_RUNS, ref, repo: name }
+      );
+
+      return (data.statuses ?? []).map((status) => ({
+        context: status.context,
+        state: status.state,
+      }));
+    },
+
     listRepoFiles,
 
     postComment: async (
@@ -408,12 +455,17 @@ export const createOctokitFrontierGitHub = (
       // Only reuse a run this App created. A same-named run from another App
       // must never be patched: doing so would rewrite someone else's check and
       // hide the fact that the gate has not reported on this commit.
+      //
+      // Fail closed when the App ID is unknown: without it there is no way to
+      // tell our run from a stranger's, so reuse nothing and create a fresh run.
+      // Name-only matching here is precisely the hole this closes.
       const ownAppId = Number(process.env.GITHUB_APP_ID);
-      const previous = (existing.data.check_runs ?? []).find(
-        (run) =>
-          run.name === FRONTIER_CHECK_NAME &&
-          (!Number.isFinite(ownAppId) || run.app?.id === ownAppId)
-      );
+      const previous = Number.isFinite(ownAppId)
+        ? (existing.data.check_runs ?? []).find(
+            (run) =>
+              run.name === FRONTIER_CHECK_NAME && run.app?.id === ownAppId
+          )
+        : undefined;
 
       if (previous) {
         const { data } = await clientValue.request(

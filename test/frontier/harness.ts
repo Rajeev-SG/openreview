@@ -37,6 +37,8 @@ export interface FakeRepoState {
   required: string[];
   /** Expected issuer per required context, mirroring branch-protection app_id. */
   requiredAppIds?: Record<string, number>;
+  /** Legacy commit statuses at the head, newest first. */
+  statuses?: { context: string; state: string }[];
 }
 
 export interface FakeGitHub {
@@ -87,23 +89,42 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
       await yieldMicrotask();
       return state.config ?? null;
     },
-    getRequiredChecks: async (_repo, _baseBranch, _ref, perRepoChecks) => {
+    getRequiredChecks: async (
+      _repo,
+      _baseBranch,
+      _ref,
+      perRepoChecks,
+      perRepoAppIds
+    ) => {
       await yieldMicrotask();
 
       if (state.requiredUnknown) {
         return { known: false, reason: state.requiredUnknown };
       }
 
-      const names = perRepoChecks ?? state.required;
+      // Mirror the adapter: an explicit per-repo policy is authoritative even
+      // when empty, and carries its own issuer pins.
+      if (perRepoChecks !== undefined) {
+        return {
+          appIds: perRepoAppIds ?? {},
+          known: true,
+          names: perRepoChecks,
+        };
+      }
+
       return {
         appIds: state.requiredAppIds,
         known: true,
-        names,
+        names: state.required,
       };
     },
     listCheckRuns: async () => {
       await yieldMicrotask();
       return state.checks;
+    },
+    listCommitStatuses: async () => {
+      await yieldMicrotask();
+      return state.statuses ?? [];
     },
     listRepoFiles: async () => {
       await yieldMicrotask();

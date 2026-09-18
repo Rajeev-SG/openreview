@@ -224,16 +224,28 @@ const resolveRequiredPolicy = async (
   deps: FrontierEngineDeps,
   repo: string,
   baseBranch: string
-): Promise<string[] | undefined> => {
+): Promise<{
+  appIds?: Record<string, number>;
+  checks: string[] | undefined;
+  unreadable?: string;
+}> => {
   try {
     const raw = await deps.github.getRepoConfig(repo, baseBranch);
     const config = parseRepoConfig(raw);
-    return config.requiredChecks;
-  } catch {
-    // An unreadable config is "not configured", not "no CI required": the
-    // caller then falls back to platform settings, which fail closed if they
-    // cannot be read either.
-    return undefined;
+    return { appIds: config.requiredCheckApps, checks: config.requiredChecks };
+  } catch (error) {
+    // A config that cannot be read is not the same as one that is absent, and
+    // silently falling back to platform settings would gate the repository on a
+    // policy it did not choose. The caller decides: a repository whose policy
+    // cannot be read does not spend, and the reason is surfaced in the check.
+    const message = error instanceof Error ? error.message : String(error);
+    emit(deps, "frontier.policy_unreadable", {
+      baseBranch,
+      prNumber: 0,
+      reason: message,
+      repo,
+    });
+    return { checks: undefined, unreadable: message };
   }
 };
 
@@ -243,12 +255,27 @@ const resolveCi = async (
   baseBranch: string,
   ref: string
 ): Promise<CiStatus> => {
-  const perRepoChecks = await resolveRequiredPolicy(deps, repo, baseBranch);
+  const policy = await resolveRequiredPolicy(deps, repo, baseBranch);
+
+  if (policy.unreadable) {
+    return {
+      evidence: [],
+      failed: [],
+      ok: false,
+      pending: [],
+      required: [],
+      unknown:
+        `the repository's frontier config on ${baseBranch} could not be read ` +
+        `(${policy.unreadable}), so its required-CI policy is unknown`,
+    };
+  }
+
   const resolved = await deps.github.getRequiredChecks(
     repo,
     baseBranch,
     ref,
-    perRepoChecks
+    policy.checks,
+    policy.appIds
   );
 
   // Fail closed: without a trustworthy view of required CI the gate cannot
@@ -279,27 +306,78 @@ const resolveCi = async (
   const requiredRuns = runs.filter(
     (run) => required.includes(run.name) && fromExpectedIssuer(run)
   );
-  const failed = requiredRuns.filter(
-    (run) =>
-      run.status === "completed" &&
-      run.conclusion !== null &&
-      FAILING_CONCLUSIONS.has(run.conclusion)
-  );
-  const pending = required.filter(
+
+  // A required context that no check run provides may be a legacy commit
+  // status. Resolve those from the status API so a status-only requirement is
+  // real evidence instead of a wait that can only expire.
+  const coveredByRuns = new Set(requiredRuns.map((run) => run.name));
+  const statusOnlyNames = required.filter((name) => !coveredByRuns.has(name));
+
+  const statuses =
+    statusOnlyNames.length > 0
+      ? await deps.github.listCommitStatuses(repo, ref)
+      : [];
+
+  const latestStatus = new Map<string, string>();
+
+  for (const status of statuses) {
+    if (!latestStatus.has(status.context)) {
+      latestStatus.set(status.context, status.state);
+    }
+  }
+
+  const failedStatuses = statusOnlyNames.filter((name) => {
+    const state = latestStatus.get(name);
+    return state === "failure" || state === "error";
+  });
+
+  const pendingStatuses = statusOnlyNames.filter(
     (name) =>
-      !requiredRuns.some(
-        (run) => run.name === name && run.status === "completed"
-      )
+      latestStatus.get(name) === undefined ||
+      latestStatus.get(name) === "pending"
   );
 
-  const evidence = requiredRuns.map(
-    (run) => `${run.name}: ${run.conclusion ?? run.status}`
-  );
+  const failed = [
+    ...requiredRuns.filter(
+      (run) =>
+        run.status === "completed" &&
+        run.conclusion !== null &&
+        FAILING_CONCLUSIONS.has(run.conclusion)
+    ),
+    // A failed legacy commit status is a failing required check. It is
+    // represented in the same shape so the existing ci_failed path reports it.
+    ...failedStatuses.map((name) => ({
+      conclusion: latestStatus.get(name) ?? "failure",
+      name,
+      status: "completed",
+    })),
+  ];
+  const pending = [
+    ...required.filter(
+      (name) =>
+        !requiredRuns.some(
+          (run) => run.name === name && run.status === "completed"
+        ) && !latestStatus.has(name)
+    ),
+    ...pendingStatuses,
+  ];
+
+  const evidence = [
+    ...requiredRuns.map(
+      (run) => `${run.name}: ${run.conclusion ?? run.status}`
+    ),
+    ...statusOnlyNames
+      .filter((name) => latestStatus.has(name))
+      .map((name) => `${name}: ${latestStatus.get(name)} (commit status)`),
+  ];
 
   return {
     evidence,
     failed,
-    ok: failed.length === 0 && pending.length === 0,
+    ok:
+      failed.length === 0 &&
+      failedStatuses.length === 0 &&
+      pending.length === 0,
     pending,
     required,
   };

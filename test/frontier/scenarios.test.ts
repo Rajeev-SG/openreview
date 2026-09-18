@@ -1013,3 +1013,131 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
     expect(outcome.status).toBe("ci_failed");
   });
 });
+
+describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () => {
+  const codeFiles = [
+    { additions: 10, deletions: 1, path: "lib/policy.ts", status: "modified" },
+    {
+      additions: 2,
+      deletions: 0,
+      path: "lib/policy.test.ts",
+      status: "modified",
+    },
+  ];
+
+  test("F1: an explicit empty required_checks policy means no required CI", async () => {
+    // `required_checks: []` is a deliberate "this repository has no required
+    // CI". Collapsing it with "not configured" silently applied branch
+    // protection the repository had declared it did not want.
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "failure",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config: "frontier:\n  required_checks: []\n",
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    // The declared-empty policy wins: a failing `verify` is not required, so
+    // the review proceeds rather than reporting a CI failure the repo opted out of.
+    expect(outcome.status).toBe("passed");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("F3: a foreign-App check cannot satisfy a pinned per-repo policy", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 999_999,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config:
+          "frontier:\n  required_checks:\n    - verify\n  required_check_apps:\n    verify: 15368\n",
+        diff: "+code",
+        files: codeFiles,
+        required: [],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("waiting_ci");
+    expect(harness.model.calls).toHaveLength(0);
+  });
+
+  test("F3: the pinned issuer satisfies the per-repo policy", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config:
+          "frontier:\n  required_checks:\n    - verify\n  required_check_apps:\n    verify: 15368\n",
+        diff: "+code",
+        files: codeFiles,
+        required: [],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("F5: a legacy commit-status context is real evidence, not an endless wait", async () => {
+    // Branch protection can require a classic commit status. That is
+    // unsatisfiable by the check-run API, so it is read from the status API;
+    // a green status must let the review proceed.
+    const harness = createHarness({
+      repo: {
+        checks: [],
+        diff: "+code",
+        files: codeFiles,
+        required: ["ci/status"],
+        statuses: [{ context: "ci/status", state: "success" }],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("F5: a failing legacy commit status blocks spend", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [],
+        diff: "+code",
+        files: codeFiles,
+        required: ["ci/status"],
+        statuses: [{ context: "ci/status", state: "failure" }],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("ci_failed");
+    expect(harness.model.calls).toHaveLength(0);
+  });
+});
