@@ -35,10 +35,15 @@ export interface FakeRepoState {
   issue?: LinkedIssue | null;
   pr: PullRequestView;
   required: string[];
+  /** Expected issuer per required context, mirroring branch-protection app_id. */
+  requiredAppIds?: Record<string, number>;
+  /** Legacy commit statuses at the head, newest first. */
+  statuses?: { context: string; state: string }[];
 }
 
 export interface FakeGitHub {
   checkUpdates: FrontierCheckUpdate[];
+  removedLabels: string[];
   comments: string[];
   github: FrontierGitHub;
   state: FakeRepoState;
@@ -53,6 +58,7 @@ export const HARNESS_NOW = new Date("2026-09-12T12:00:00.000Z");
 
 export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
   const comments: string[] = [];
+  const removedLabels: string[] = [];
   const checkUpdates: FrontierCheckUpdate[] = [];
   let checkId = 0;
 
@@ -85,18 +91,56 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
       await yieldMicrotask();
       return state.config ?? null;
     },
-    getRequiredChecks: async () => {
+    getRequiredChecks: async (
+      _repo,
+      _baseBranch,
+      _ref,
+      perRepoChecks,
+      perRepoAppIds
+    ) => {
       await yieldMicrotask();
 
       if (state.requiredUnknown) {
+        // Mirror the adapter: with no readable platform settings a per-repo
+        // policy is the only gate, and only with the explicit operator opt-in.
+        const trusted = /^(1|true|yes)$/i.test(
+          process.env.FRONTIER_TRUST_REPO_REQUIRED_CHECKS ?? ""
+        );
+
+        if (perRepoChecks !== undefined && trusted) {
+          return {
+            appIds: perRepoAppIds ?? {},
+            known: true,
+            names: perRepoChecks,
+          };
+        }
+
+        if (perRepoChecks !== undefined) {
+          return { known: false, reason: "per-repo policy not trusted" };
+        }
+
         return { known: false, reason: state.requiredUnknown };
       }
 
-      return { known: true, names: state.required };
+      // Mirror the adapter's ADDITIVE precedence: platform requirements plus
+      // any per-repo additions, with a platform issuer pin winning.
+      const names = [
+        ...new Set([...state.required, ...(perRepoChecks ?? [])]),
+      ].filter((name) => name !== "frontier-quality");
+
+      return {
+        appIds: { ...perRepoAppIds, ...state.requiredAppIds },
+        known: true,
+        names,
+      };
     },
     listCheckRuns: async () => {
       await yieldMicrotask();
       return state.checks;
+    },
+    listCommitStatuses: async () => {
+      await yieldMicrotask();
+      return state.statuses ?? [];
     },
     listRepoFiles: async () => {
       await yieldMicrotask();
@@ -106,6 +150,10 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
       await yieldMicrotask();
       comments.push(body);
     },
+    removeLabel: async (_repo, _prNumber, label) => {
+      await yieldMicrotask();
+      removedLabels.push(label);
+    },
     setFrontierCheck: async (update) => {
       await yieldMicrotask();
       checkUpdates.push(update);
@@ -114,7 +162,7 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
     },
   };
 
-  return { checkUpdates, comments, github, state };
+  return { checkUpdates, comments, github, removedLabels, state };
 };
 
 export interface FakeModel {

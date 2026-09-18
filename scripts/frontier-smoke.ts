@@ -185,6 +185,10 @@ const createLiveGitHub = (
       await settle();
       return input.checkRuns;
     },
+    listCommitStatuses: async () => {
+      await Promise.resolve();
+      return [];
+    },
     listRepoFiles: async () => {
       await settle();
       // The smoke harness has no repo tree to list; "unknown" keeps every
@@ -203,6 +207,9 @@ const createLiveGitHub = (
         summary: "PR comment posted",
         title: "PR comment",
       });
+    },
+    removeLabel: async () => {
+      await Promise.resolve();
     },
     setFrontierCheck: async (update) => {
       await settle();

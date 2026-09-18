@@ -13,6 +13,7 @@ import type {
   FrontierGitHub,
 } from "@/lib/frontier/github";
 import {
+  FRONTIER_REASONING_TOKEN_ALLOWANCE,
   FRONTIER_SYSTEM_PROMPT,
   FrontierModelError,
 } from "@/lib/frontier/model";
@@ -144,7 +145,11 @@ const reservationFor = (deps: FrontierEngineDeps): number =>
   deriveReservationUsd(
     {
       inputUsdPerMTok: deps.budget.inputUsdPerMTok,
-      maxOutputTokens: deps.limits.maxOutputTokens,
+      // The request allows the configured answer budget plus the reasoning
+      // allowance, so the reservation must cover the same span: a ceiling that
+      // the request can exceed is not a ceiling.
+      maxOutputTokens:
+        deps.limits.maxOutputTokens + FRONTIER_REASONING_TOKEN_ALLOWANCE,
       maxPacketChars: deps.limits.maxPacketChars,
       outputUsdPerMTok: deps.budget.outputUsdPerMTok,
     },
@@ -205,6 +210,11 @@ const contextCandidates = (
 interface CiStatus {
   evidence: string[];
   failed: CheckRunView[];
+  /**
+   * Required contexts that exist neither as a check run nor as a commit status
+   * at this head. A misconfiguration, not a wait.
+   */
+  neverReported?: string[];
   ok: boolean;
   pending: string[];
   required: string[];
@@ -212,13 +222,71 @@ interface CiStatus {
   unknown?: string;
 }
 
+/**
+ * Resolve the repository's trusted required-check policy.
+ *
+ * The policy is read from the BASE branch, never the PR head: a pull request
+ * must not be able to change the check policy that evaluates it. A repository
+ * that configures `required_checks` gets exactly those; otherwise the platform
+ * settings (or the operator override) apply.
+ */
+const resolveRequiredPolicy = async (
+  deps: FrontierEngineDeps,
+  repo: string,
+  baseBranch: string
+): Promise<{
+  appIds?: Record<string, number>;
+  checks: string[] | undefined;
+  unreadable?: string;
+}> => {
+  try {
+    const raw = await deps.github.getRepoConfig(repo, baseBranch);
+    const config = parseRepoConfig(raw);
+    return { appIds: config.requiredCheckApps, checks: config.requiredChecks };
+  } catch (error) {
+    // A config that cannot be read is not the same as one that is absent, and
+    // silently falling back to platform settings would gate the repository on a
+    // policy it did not choose. The caller decides: a repository whose policy
+    // cannot be read does not spend, and the reason is surfaced in the check.
+    const message = error instanceof Error ? error.message : String(error);
+    emit(deps, "frontier.policy_unreadable", {
+      baseBranch,
+      prNumber: 0,
+      reason: message,
+      repo,
+    });
+    return { checks: undefined, unreadable: message };
+  }
+};
+
 const resolveCi = async (
   deps: FrontierEngineDeps,
   repo: string,
   baseBranch: string,
   ref: string
 ): Promise<CiStatus> => {
-  const resolved = await deps.github.getRequiredChecks(repo, baseBranch, ref);
+  const policy = await resolveRequiredPolicy(deps, repo, baseBranch);
+
+  if (policy.unreadable) {
+    return {
+      evidence: [],
+      failed: [],
+      ok: false,
+      pending: [],
+      required: [],
+      unknown:
+        `the repository's frontier config on ${baseBranch} could not be read ` +
+        `(${policy.unreadable}), so its required-CI policy is unknown`,
+    };
+  }
+
+  const resolved = await deps.github.getRequiredChecks(
+    repo,
+    baseBranch,
+    ref,
+    policy.checks,
+    policy.appIds
+  );
 
   // Fail closed: without a trustworthy view of required CI the gate cannot
   // honour its "wait for required CI before spending" guarantee.
@@ -235,29 +303,104 @@ const resolveCi = async (
 
   const required = resolved.names;
   const runs = await deps.github.listCheckRuns(repo, ref);
+  const expectedAppIds = resolved.appIds ?? {};
 
-  const requiredRuns = runs.filter((run) => required.includes(run.name));
-  const failed = requiredRuns.filter(
-    (run) =>
-      run.status === "completed" &&
-      run.conclusion !== null &&
-      FAILING_CONCLUSIONS.has(run.conclusion)
+  // A required context is only satisfied by a run from the App the platform
+  // recorded for that context. Without this, any App could publish a check with
+  // a required context's name and stand in for evidence it did not produce.
+  const fromExpectedIssuer = (run: CheckRunView): boolean => {
+    const expected = expectedAppIds[run.name];
+    return expected === undefined || run.appId === expected;
+  };
+
+  const requiredRuns = runs.filter(
+    (run) => required.includes(run.name) && fromExpectedIssuer(run)
   );
-  const pending = required.filter(
+
+  // A required context that no check run provides may be a legacy commit
+  // status. Resolve those from the status API so a status-only requirement is
+  // real evidence instead of a wait that can only expire.
+  const coveredByRuns = new Set(requiredRuns.map((run) => run.name));
+  const statusOnlyNames = required.filter((name) => !coveredByRuns.has(name));
+
+  const statuses =
+    statusOnlyNames.length > 0
+      ? await deps.github.listCommitStatuses(repo, ref)
+      : [];
+
+  const latestStatus = new Map<string, string>();
+
+  for (const status of statuses) {
+    if (!latestStatus.has(status.context)) {
+      latestStatus.set(status.context, status.state);
+    }
+  }
+
+  const failedStatuses = statusOnlyNames.filter((name) => {
+    const state = latestStatus.get(name);
+    return state === "failure" || state === "error";
+  });
+
+  const pendingStatuses = statusOnlyNames.filter(
     (name) =>
-      !requiredRuns.some(
-        (run) => run.name === name && run.status === "completed"
-      )
+      latestStatus.get(name) === undefined ||
+      latestStatus.get(name) === "pending"
   );
 
-  const evidence = requiredRuns.map(
-    (run) => `${run.name}: ${run.conclusion ?? run.status}`
+  const failed = [
+    ...requiredRuns.filter(
+      (run) =>
+        run.status === "completed" &&
+        run.conclusion !== null &&
+        FAILING_CONCLUSIONS.has(run.conclusion)
+    ),
+    // A failed legacy commit status is a failing required check. It is
+    // represented in the same shape so the existing ci_failed path reports it.
+    ...failedStatuses.map((name) => ({
+      conclusion: latestStatus.get(name) ?? "failure",
+      name,
+      status: "completed",
+    })),
+  ];
+  // A required context that is neither a check run nor a commit status at this
+  // head cannot be satisfied by anything. Distinguish it from a run that is
+  // merely still queued: the first needs a configuration fix, the second needs
+  // patience, and reporting both as "waiting" hides a misconfiguration behind a
+  // timeout.
+  const neverReported = required.filter(
+    (name) =>
+      !requiredRuns.some((run) => run.name === name) &&
+      !latestStatus.has(name) &&
+      statuses.length > 0
   );
+
+  const pending = [
+    ...required.filter(
+      (name) =>
+        !requiredRuns.some(
+          (run) => run.name === name && run.status === "completed"
+        ) && !latestStatus.has(name)
+    ),
+    ...pendingStatuses,
+  ];
+
+  const evidence = [
+    ...requiredRuns.map(
+      (run) => `${run.name}: ${run.conclusion ?? run.status}`
+    ),
+    ...statusOnlyNames
+      .filter((name) => latestStatus.has(name))
+      .map((name) => `${name}: ${latestStatus.get(name)} (commit status)`),
+  ];
 
   return {
     evidence,
     failed,
-    ok: failed.length === 0 && pending.length === 0,
+    neverReported,
+    ok:
+      failed.length === 0 &&
+      failedStatuses.length === 0 &&
+      pending.length === 0,
     pending,
     required,
   };
@@ -494,6 +637,27 @@ const handleCiNotReady = async (
 
   const where = phase === "review #1" ? "" : " on the repair push";
 
+  // A required context that no run and no status provides is a configuration
+  // error, not a slow CI job. Report it immediately rather than parking the PR
+  // behind the wait timeout with a message that reads like patience is needed.
+  if ((ci.neverReported?.length ?? 0) > 0) {
+    state.lifecycle = "needs_manual_review";
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier review skipped: required context(s) ${ci.neverReported?.join(", ")} are neither a check run nor a commit status on this head. This is a configuration error, not a pending job; fix the required-check configuration. No frontier tokens were spent.`,
+      title: "Frontier review needs CI configuration",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `required context never provided: ${ci.neverReported?.join(", ")}`,
+      reviewCount: state.reviewCount,
+      status: "needs_manual_review",
+    };
+  }
+
   if (ci.failed.length > 0) {
     state.lifecycle = "ci_failed";
     await setCheck(deps, state, {
@@ -727,6 +891,16 @@ const runFirstReview = async (
       }`,
       title: "Frontier review failed",
     });
+    // `reviewCount` is still 0 (a failed call is not recorded), so the next
+    // push retries review #1 through the ordinary path. Say that plainly
+    // instead of leaving the author to guess whether the slot was consumed.
+    await deps.github.postComment(
+      state.repo,
+      state.prNumber,
+      `Frontier review #1 could not complete (${
+        error instanceof Error ? error.message : String(error)
+      }). No review slot was consumed. Push any commit (or re-open the PR) to retry.`
+    );
     return {
       calls: 0,
       costUsd: 0,
@@ -983,12 +1157,27 @@ const attemptFinalReview = async (
     );
 
     state.lifecycle = "needs_manual_review";
+    state.finalSignalPending = false;
+
+    // The signal label is still applied, so re-adding it fires no `labeled`
+    // event and the documented retry would be an invisible no-op. Remove it
+    // here so a retry is a single, ordinary re-add of the same label rather
+    // than a remove/add dance the operator has to work out for themselves.
+    await deps.github.removeLabel(
+      state.repo,
+      state.prNumber,
+      FINAL_SIGNAL_LABEL
+    );
+
     await setCheck(deps, state, {
       conclusion: "action_required",
       status: "completed",
-      summary: `Frontier final review failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      summary:
+        `Frontier final review failed: ${
+          error instanceof Error ? error.message : String(error)
+        }. ` +
+        `The \`${FINAL_SIGNAL_LABEL}\` label was re-armed: re-add it to retry the ` +
+        "final review. No review slot was consumed.",
       title: "Frontier final review failed",
     });
     return {

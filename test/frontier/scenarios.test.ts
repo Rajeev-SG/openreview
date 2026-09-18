@@ -899,3 +899,402 @@ describe("a spent review budget must still leave a check on the head", () => {
     expect(["failure", "action_required"]).toContain(String(last?.conclusion));
   });
 });
+
+describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
+  const codeFiles = [
+    { additions: 10, deletions: 1, path: "lib/policy.ts", status: "modified" },
+    {
+      additions: 2,
+      deletions: 0,
+      path: "lib/policy.test.ts",
+      status: "modified",
+    },
+  ];
+
+  test("a same-named check from another App does not satisfy required CI", async () => {
+    // A required context is only satisfied by the App the platform recorded for
+    // it. A check run published by another App with the same name must not let
+    // the gate conclude CI is green and spend a review.
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 999_999,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+        requiredAppIds: { verify: 15_368 },
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(harness.model.calls).toHaveLength(0);
+    expect(outcome.calls).toBe(0);
+    // Not green: the real issuer has not reported, so the gate waits rather
+    // than treating a spoofed context as evidence.
+    expect(outcome.status).toBe("waiting_ci");
+  });
+
+  test("the expected issuer satisfies required CI and the review proceeds", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+        requiredAppIds: { verify: 15_368 },
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("a context with no recorded issuer is still accepted from any App", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 42,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+  });
+
+  test("per-repo required_checks policy gates a repo with no branch protection", async () => {
+    // Private Free-plan repos cannot have branch protection, so the trusted
+    // per-repo policy is the fallback. It must actually be applied.
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "failure",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config: "frontier:\n  required_checks:\n    - verify\n",
+        diff: "+code",
+        files: codeFiles,
+        required: [],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(harness.model.calls).toHaveLength(0);
+    expect(outcome.status).toBe("ci_failed");
+  });
+});
+
+describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () => {
+  const codeFiles = [
+    { additions: 10, deletions: 1, path: "lib/policy.ts", status: "modified" },
+    {
+      additions: 2,
+      deletions: 0,
+      path: "lib/policy.test.ts",
+      status: "modified",
+    },
+  ];
+
+  test("F1: a per-repo policy cannot remove a platform requirement", async () => {
+    // The reviewer's finding: a repository-committed file is only as
+    // trustworthy as write access to the default branch, so it must not be
+    // able to delete a requirement the platform imposes. `required_checks: []`
+    // adds nothing; it does not clear `verify`.
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "failure",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config: "frontier:\n  required_checks: []\n",
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+        requiredAppIds: { verify: 15_368 },
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("ci_failed");
+    expect(harness.model.calls).toHaveLength(0);
+  });
+
+  test("F1: a per-repo policy may add a requirement the platform does not impose", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config:
+          "frontier:\n  required_checks:\n    - extra-lint\n  required_check_apps:\n    extra-lint: 15368\n",
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    // `extra-lint` has not reported, so the added requirement blocks spend.
+    expect(outcome.status).toBe("waiting_ci");
+    expect(harness.model.calls).toHaveLength(0);
+  });
+
+  test("F3: a foreign-App check cannot satisfy a pinned per-repo policy", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 999_999,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config:
+          "frontier:\n  required_checks:\n    - verify\n  required_check_apps:\n    verify: 15368\n",
+        diff: "+code",
+        files: codeFiles,
+        required: [],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("waiting_ci");
+    expect(harness.model.calls).toHaveLength(0);
+  });
+
+  test("F3: the pinned issuer satisfies the per-repo policy", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config:
+          "frontier:\n  required_checks:\n    - verify\n  required_check_apps:\n    verify: 15368\n",
+        diff: "+code",
+        files: codeFiles,
+        required: [],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("F5: a legacy commit-status context is real evidence, not an endless wait", async () => {
+    // Branch protection can require a classic commit status. That is
+    // unsatisfiable by the check-run API, so it is read from the status API;
+    // a green status must let the review proceed.
+    const harness = createHarness({
+      repo: {
+        checks: [],
+        diff: "+code",
+        files: codeFiles,
+        required: ["ci/status"],
+        statuses: [{ context: "ci/status", state: "success" }],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("F5: a failing legacy commit status blocks spend", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [],
+        diff: "+code",
+        files: codeFiles,
+        required: ["ci/status"],
+        statuses: [{ context: "ci/status", state: "failure" }],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("ci_failed");
+    expect(harness.model.calls).toHaveLength(0);
+  });
+});
+
+describe("scenario C1 — transient provider failure is recoverable (T12/T13)", () => {
+  const codeFiles = [
+    { additions: 10, deletions: 1, path: "lib/policy.ts", status: "modified" },
+    {
+      additions: 2,
+      deletions: 0,
+      path: "lib/policy.test.ts",
+      status: "modified",
+    },
+  ];
+
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: "+code",
+    files: codeFiles,
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  test("a failed final review re-arms the signal label so the retry is one re-add", async () => {
+    const harness = createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One material problem.",
+          verdict: "changes_required",
+        },
+        clean,
+      ],
+    });
+
+    // The engine's own final-review call fails outright, which is what a
+    // persistent provider fault looks like after the client's retries.
+    // Review #1 uses the queued review; the final review always fails with the
+    // production provider error.
+    const { model: realModel } = harness.model;
+    const failure = new Error("OpenRouter returned an empty completion");
+    const reject = async (): Promise<never> => {
+      await Promise.resolve();
+      throw failure;
+    };
+    const responses = [
+      (request: Parameters<typeof realModel.review>[0]) =>
+        realModel.review(request),
+      reject,
+      reject,
+    ];
+    let call = -1;
+    harness.deps.model = {
+      review: (request) => {
+        call += 1;
+        return responses[Math.min(call, responses.length - 1)](request);
+      },
+    };
+
+    const first = await handleFrontierEvent(harness.deps, pullRequestEvent());
+    expect(first.status).toBe("waiting_final_signal");
+
+    await pushRepair(harness, "repair0001");
+    const second = await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "repair0001" })
+    );
+
+    expect(second.status).toBe("needs_manual_review");
+    // The one-shot label is consumed, so a re-add fires a real `labeled` event
+    // instead of being an invisible no-op.
+    expect(harness.fakeGitHub.removedLabels).toContain(FINAL_SIGNAL_LABEL);
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.title).toBe("Frontier final review failed");
+    expect(last?.summary).toContain(FINAL_SIGNAL_LABEL);
+  });
+
+  test("an empty completion is classified as retryable by the model client", async () => {
+    // The production failure: a 200 with no completion was treated as
+    // permanent, so the client never retried and the PR stranded in
+    // needs_manual_review. It is a transient provider fault.
+    const { createOpenRouterFrontierModel } =
+      await import("@/lib/frontier/model");
+    const responses = [
+      () => Response.json({ choices: [{ message: { content: "" } }] }),
+      () =>
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  findings: [],
+                  summary: "Fine.",
+                  verdict: "pass",
+                }),
+              },
+            },
+          ],
+          usage: { completion_tokens: 5, cost: 0.001, prompt_tokens: 10 },
+        }),
+    ];
+    let attempts = 0;
+    const fetchImpl = (async () => {
+      await Promise.resolve();
+      const next = responses[Math.min(attempts, responses.length - 1)];
+      attempts += 1;
+      return next();
+    }) as unknown as typeof fetch;
+
+    const client = createOpenRouterFrontierModel({
+      apiKey: "test",
+      fetchImpl,
+      maxAttempts: 2,
+      model: "z-ai/glm-5.3",
+    });
+
+    const response = await client.review({
+      maxTokens: 100,
+      system: "s",
+      user: "u",
+    });
+
+    expect(attempts).toBe(2);
+    expect(response.review.verdict).toBe("pass");
+  });
+});
