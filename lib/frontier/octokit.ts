@@ -248,6 +248,31 @@ export const createOctokitFrontierGitHub = (
       return typeof response.data === "string" ? response.data : "";
     },
 
+    getDeltaFiles: async (
+      repo: string,
+      fromSha: string,
+      toSha: string
+    ): Promise<{ path: string; status: string }[] | "unknown"> => {
+      const { owner, repo: name } = split(repo);
+
+      try {
+        const clientValue = await client();
+        const { data } = await clientValue.request(
+          "GET /repos/{owner}/{repo}/compare/{basehead}",
+          { basehead: `${fromSha}...${toSha}`, owner, repo: name }
+        );
+
+        return (data.files ?? []).map((file) => ({
+          path: file.filename,
+          status: file.status ?? "modified",
+        }));
+      } catch {
+        // Unreadable is not empty. The caller must not conclude "nothing
+        // changed" from a failed read.
+        return "unknown";
+      }
+    },
+
     getDiff: async (repo: string, prNumber: number): Promise<string> => {
       const { owner, repo: name } = split(repo);
       const clientValue = await client();

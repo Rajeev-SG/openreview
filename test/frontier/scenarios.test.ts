@@ -1389,6 +1389,9 @@ describe("scenario C2 — no paid call for a non-substantive repair (T07)", () =
     harness.fakeGitHub.state.deltaDiffs = {
       "head0001..changelog1": changelogDiff,
     };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "CHANGELOG.md", status: "modified" },
+    ];
 
     const outcome = await signal(harness, "changelog1");
 
@@ -1415,6 +1418,7 @@ describe("scenario C2 — no paid call for a non-substantive repair (T07)", () =
   test("an empty delta consumes no paid slot", async () => {
     const harness = await firstReview(reviewWithFindings());
     harness.fakeGitHub.state.deltaDiffs = { "head0001..emptyhead1": "" };
+    harness.fakeGitHub.state.deltaFiles = [];
 
     const outcome = await signal(harness, "emptyhead1");
 
@@ -1428,6 +1432,9 @@ describe("scenario C2 — no paid call for a non-substantive repair (T07)", () =
       "head0001..changelog1": changelogDiff,
       "head0001..realrepair": CODE_DIFF,
     };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "CHANGELOG.md", status: "modified" },
+    ];
 
     const refused = await signal(harness, "changelog1");
     expect(refused.calls).toBe(0);
@@ -1437,5 +1444,218 @@ describe("scenario C2 — no paid call for a non-substantive repair (T07)", () =
 
     expect(reviewed.calls).toBe(1);
     expect(harness.model.calls).toHaveLength(2);
+  });
+});
+
+describe("scenario C3 — repair-delta classification is not fooled (T07 follow-ups)", () => {
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: CODE_DIFF,
+    files: [
+      {
+        additions: 10,
+        deletions: 1,
+        path: "lib/policy.ts",
+        status: "modified",
+      },
+      {
+        additions: 2,
+        deletions: 0,
+        path: "lib/policy.test.ts",
+        status: "modified",
+      },
+    ],
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  const firstReview = async (harness: ReturnType<typeof createHarness>) => {
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+    expect(outcome.status).toBe("waiting_final_signal");
+  };
+
+  const signal = (harness: ReturnType<typeof createHarness>, head: string) => {
+    harness.fakeGitHub.state.pr = {
+      ...harness.fakeGitHub.state.pr,
+      headSha: head,
+    };
+    return handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: head })
+    );
+  };
+
+  const withFindings = () =>
+    createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One problem.",
+          verdict: "changes_required",
+        },
+      ],
+    });
+
+  test("T07-1: an empty diff with changes reported is indeterminate, not 'nothing changed'", async () => {
+    const harness = withFindings();
+    await firstReview(harness);
+    // The diff payload is missing, but the compare API knows files changed.
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..mystery1": "" };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "lib/policy.ts", status: "modified" },
+    ];
+
+    const outcome = await signal(harness, "mystery1");
+
+    expect(outcome.status).toBe("needs_manual_review");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.title).toBe(
+      "Frontier final review could not verify the delta"
+    );
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("T07-1: an unreadable file list is indeterminate, not 'nothing changed'", async () => {
+    const harness = withFindings();
+    await firstReview(harness);
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..unknown1": "" };
+    harness.fakeGitHub.state.deltaFiles = "unknown";
+
+    const outcome = await signal(harness, "unknown1");
+
+    expect(outcome.status).toBe("needs_manual_review");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("T07-2: a deletion-only repair is not described as 'no reviewable change'", async () => {
+    const harness = withFindings();
+    await firstReview(harness);
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..deleted1": [
+        "diff --git a/lib/policy.ts b/lib/policy.ts",
+        "deleted file mode 100644",
+        "--- a/lib/policy.ts",
+        "+++ /dev/null",
+        "@@ -1,2 +0,0 @@",
+        "-const a = 1;",
+        "-const b = 2;",
+      ].join("\n"),
+    };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "lib/policy.ts", status: "removed" },
+    ];
+
+    const outcome = await signal(harness, "deleted1");
+
+    const title = harness.fakeGitHub.checkUpdates.at(-1)?.title;
+    expect(title).toContain("deletion-only");
+    expect(title).not.toContain("no substantive repair");
+    expect(outcome.calls).toBe(0);
+  });
+
+  test("T07-3: an explicit force-review is not swallowed by the substantiveness refusal", async () => {
+    // `frontier-review` routes through the ordinary evaluate path, not the
+    // final-review path, so it must still reach the model.
+    const harness = withFindings();
+    await firstReview(harness);
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..forced001": "" };
+    harness.fakeGitHub.state.deltaFiles = [];
+    harness.fakeGitHub.state.pr = {
+      ...harness.fakeGitHub.state.pr,
+      headSha: "forced001",
+    };
+
+    const before = harness.model.calls.length;
+    const outcome = await handleFrontierEvent(
+      harness.deps,
+      labelEvent("frontier-review", { headSha: "forced001" })
+    );
+
+    const title = harness.fakeGitHub.checkUpdates.at(-1)?.title;
+    expect(title).not.toContain("no substantive repair");
+    // The override must actually reach the model rather than being swallowed.
+    expect(harness.model.calls.length).toBeGreaterThan(before);
+    expect(outcome.calls).toBeGreaterThan(0);
+  });
+});
+
+describe("scenario C4 — force-review is honoured but stays inside the budget", () => {
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: CODE_DIFF,
+    files: [
+      {
+        additions: 10,
+        deletions: 1,
+        path: "lib/policy.ts",
+        status: "modified",
+      },
+      {
+        additions: 2,
+        deletions: 0,
+        path: "lib/policy.test.ts",
+        status: "modified",
+      },
+    ],
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  test("repeated force labels cannot spend more than the cycle allowance", async () => {
+    const harness = createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One problem.",
+          verdict: "changes_required",
+        },
+        {
+          findings: [finding()],
+          summary: "Still a problem.",
+          verdict: "changes_required",
+        },
+        { findings: [], summary: "Fine now.", verdict: "pass" },
+        { findings: [], summary: "Fine now.", verdict: "pass" },
+      ],
+    });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    // Force it several times; each push/head change would otherwise be a fresh
+    // opportunity to spend.
+    for (const head of ["forced1", "forced2", "forced3"]) {
+      harness.fakeGitHub.state.pr = {
+        ...harness.fakeGitHub.state.pr,
+        headSha: head,
+      };
+      harness.fakeGitHub.state.deltaDiffs = {
+        [`head0001..${head}`]: CODE_DIFF,
+      };
+      harness.fakeGitHub.state.deltaFiles = [
+        { path: "lib/policy.ts", status: "modified" },
+      ];
+      await handleFrontierEvent(
+        harness.deps,
+        labelEvent("frontier-review", { headSha: head })
+      );
+    }
+
+    // At most two paid calls in the cycle, however often the label is applied.
+    expect(harness.model.calls.length).toBeLessThanOrEqual(2);
   });
 });

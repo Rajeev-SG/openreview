@@ -155,6 +155,10 @@ const createLiveGitHub = (
 
       return input.prDiff;
     },
+    getDeltaFiles: async () => {
+      await Promise.resolve();
+      return "unknown";
+    },
     getDiff: async () => {
       await settle();
       return input.reviewOneDiff;

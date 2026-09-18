@@ -27,6 +27,8 @@ export interface FakeRepoState {
   requiredUnknown?: string;
   config?: string | null;
   deltaDiffs?: Record<string, string>;
+  /** Compare-API file list for the delta; "unknown" means unreadable. */
+  deltaFiles?: { path: string; status: string }[] | "unknown";
   diff: string;
   fileContents?: Record<string, string>;
   /** Repo tree listing; absent means the listing cannot be trusted. */
@@ -70,6 +72,10 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
     getDeltaDiff: async (_repo, fromSha, toSha) => {
       await yieldMicrotask();
       return state.deltaDiffs?.[`${fromSha}..${toSha}`] ?? state.diff;
+    },
+    getDeltaFiles: async () => {
+      await yieldMicrotask();
+      return state.deltaFiles ?? "unknown";
     },
     getDiff: async () => {
       await yieldMicrotask();

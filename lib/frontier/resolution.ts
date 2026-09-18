@@ -313,12 +313,70 @@ export const renderResolutionMarkdown = (report: ResolutionReport): string =>
  * Callers use it to refuse *before* reserving budget, so no paid slot is
  * consumed and no model call is made.
  */
-export const isSubstantiveRepair = (diff: string): boolean => {
-  const paths = parseChangedPaths(diff);
+export type RepairSubstance =
+  | { kind: "substantive" }
+  | { kind: "empty" }
+  | { kind: "deletion_only"; paths: string[] }
+  | { kind: "indeterminate"; reason: string };
 
-  if (paths.length === 0) {
-    return false;
+/**
+ * Classify a repair delta.
+ *
+ * A diff string alone cannot prove a delta is empty — a truncated payload, an
+ * unrecognised format, or a failed fetch all parse to zero paths. So the caller
+ * supplies an independent `fileSignal` from the compare API, and the two must
+ * agree before "nothing changed" is asserted:
+ *
+ * - `unknown` signal  → `indeterminate`; never reported as "nothing changed".
+ * - signal lists files while the diff parsed none → `indeterminate`.
+ * - only deletions, and no surviving substantive path → `deletion_only`, which
+ *   is a real repair shape (fixing a defect by removing the file) and must not
+ *   be described as "no reviewable change".
+ * - nothing substantive survives and nothing was deleted → `empty`.
+ */
+export const classifyRepairSubstance = (input: {
+  diff: string;
+  fileSignal: { path: string; status: string }[] | "unknown";
+}): RepairSubstance => {
+  const changes = parseFileChanges(input.diff);
+  const survivors = changes.filter((change) => !change.deleted);
+
+  // A diff that already parses to a substantive surviving change needs no
+  // second opinion: the repair is real whatever the compare API says.
+  const substantiveSurvivors = survivors.filter(
+    (change) => !isLowValuePath(change.path)
+  );
+
+  if (substantiveSurvivors.length > 0) {
+    return { kind: "substantive" };
   }
 
-  return paths.some((path) => !isLowValuePath(path));
+  // Nothing substantive survived the diff. Only now does the independent signal
+  // matter, because "the diff parsed to nothing" and "there was nothing" look
+  // identical in a string.
+  if (input.fileSignal === "unknown") {
+    return {
+      kind: "indeterminate",
+      reason: "the changed-file list could not be read",
+    };
+  }
+
+  if (changes.length === 0 && input.fileSignal.length > 0) {
+    return {
+      kind: "indeterminate",
+      reason: "the diff payload was empty but the compare API reports changes",
+    };
+  }
+
+  // A deletion of a substantive file is a repair shape, not "nothing changed".
+  const substantiveDeletions = changes
+    .filter((change) => change.deleted)
+    .map((change) => change.path)
+    .filter((path) => !isLowValuePath(path));
+
+  if (substantiveDeletions.length > 0) {
+    return { kind: "deletion_only", paths: substantiveDeletions };
+  }
+
+  return { kind: "empty" };
 };
