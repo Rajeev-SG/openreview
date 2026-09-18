@@ -384,3 +384,33 @@ pass` with a summary alleging a regression while the title read _Frontier
 **Operating rule:** a green `frontier-quality` means "the judge was run and
 raised nothing blocking", not "this change was verified". Read the summary, and
 check any finding before acting on it.
+
+## Diagnosis, retry and rollback (operator quick reference)
+
+**The gate is stuck.** Read the check run's `title` and `summary` first — they
+name the state, and every state is one of these:
+
+| Title                                                        | Meaning                                                                              | What to do                                                                           |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `Frontier review: changes required`                          | Findings to fix                                                                      | Fix them, push, label `frontier-ready-final`                                         |
+| `Frontier review skipped: required CI failed`                | Required CI red                                                                      | Fix CI. No slot was spent                                                            |
+| `Frontier review needs CI configuration`                     | Required CI unreadable, or a context that is neither a check run nor a commit status | Grant `administration: read`, set `required_checks:` in the repo, or fix the context |
+| `Frontier final review skipped: no substantive repair`       | Nothing reviewable changed                                                           | Push a real fix; the slot was not spent                                              |
+| `Frontier final review could not verify the delta`           | The delta could not be read (transient)                                              | Re-add `frontier-ready-final` to retry; nothing was spent                            |
+| `Frontier review: cycle complete with N blocking finding(s)` | Both paid slots spent                                                                | Fix, then label `frontier-new-cycle` for a fresh bounded cycle                       |
+| `Frontier final review failed`                               | Provider error                                                                       | The label is re-armed; re-add `frontier-ready-final` to retry                        |
+
+**Retry without spending.** A repair push is always free. A refusal that cost
+nothing is always recoverable by re-adding the signal label; the check says
+whether a slot was consumed. Do not remove/re-add labels repeatedly — one
+re-add is the retry.
+
+**Rollback.** The gate is disabled without a deploy by setting
+`FRONTIER_ENABLED=false` in the production environment (the webhook then
+returns `{"ok":true,"skipped":"frontier disabled"}` and spends nothing). The
+merge guard remains active. To roll back code, redeploy the previous Vercel
+deployment and re-alias; durable state in Redis is keyed per PR and survives,
+so no review history is lost. Never roll back by deleting state keys.
+
+**One event-driven wait owner per PR.** CI completion resumes the correct head
+and cycle through the webhook; do not add polling.

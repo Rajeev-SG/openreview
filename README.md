@@ -104,24 +104,25 @@ Generate a private key and webhook secret, then note your App ID and Installatio
 
 Add the following environment variables to your Vercel project:
 
-| Variable                       | Description                                                                                  |
-| ------------------------------ | -------------------------------------------------------------------------------------------- |
-| `OPENREVIEW_MODEL`             | Model ID to use for reviews. Defaults to `anthropic/claude-sonnet-4.6`                       |
-| `OPENROUTER_API_KEY`           | OpenRouter API key. If set, OpenReview uses OpenRouter for the configured `OPENREVIEW_MODEL` |
-| `ANTHROPIC_API_KEY`            | Anthropic API key used as a fallback when `OPENROUTER_API_KEY` is not set                    |
-| `GITHUB_APP_ID`                | The ID of your GitHub App                                                                    |
-| `GITHUB_APP_INSTALLATION_ID`   | The installation ID for your repository                                                      |
-| `GITHUB_APP_PRIVATE_KEY`       | The private key generated for your GitHub App (with `\n` for newlines)                       |
-| `GITHUB_APP_WEBHOOK_SECRET`    | The webhook secret you configured                                                            |
-| `REDIS_URL`                    | Redis URL for durable state. **Required in production**: without it the gate fails closed    |
-| `FRONTIER_ENABLED`             | (Optional) Set to `false` to disable the automatic frontier quality gate. Default `true`     |
-| `FRONTIER_MODEL`               | (Optional) Frontier judge model. Default `z-ai/glm-5.3`                                      |
-| `FRONTIER_DAILY_BUDGET_USD`    | (Optional) Daily frontier spend ceiling. Default `5`                                         |
-| `FRONTIER_MONTHLY_BUDGET_USD`  | (Optional) Monthly frontier spend ceiling. Default `50`                                      |
-| `FRONTIER_REQUIRED_CHECKS`     | (Optional) Comma-separated required checks, used instead of branch protection                |
-| `FRONTIER_MAX_CALL_USD`        | (Optional) Floor for the per-review spend reservation. Default `0.5`                         |
-| `FRONTIER_INPUT_USD_PER_MTOK`  | (Optional) Judge model input price used to derive the reservation. Default `1.4`             |
-| `FRONTIER_OUTPUT_USD_PER_MTOK` | (Optional) Judge model output price used to derive the reservation. Default `4.4`            |
+| Variable                              | Description                                                                                                                                                      |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENREVIEW_MODEL`                    | Model ID to use for reviews. Defaults to `anthropic/claude-sonnet-4.6`                                                                                           |
+| `OPENROUTER_API_KEY`                  | OpenRouter API key. If set, OpenReview uses OpenRouter for the configured `OPENREVIEW_MODEL`                                                                     |
+| `ANTHROPIC_API_KEY`                   | Anthropic API key used as a fallback when `OPENROUTER_API_KEY` is not set                                                                                        |
+| `GITHUB_APP_ID`                       | The ID of your GitHub App                                                                                                                                        |
+| `GITHUB_APP_INSTALLATION_ID`          | The installation ID for your repository                                                                                                                          |
+| `GITHUB_APP_PRIVATE_KEY`              | The private key generated for your GitHub App (with `\n` for newlines)                                                                                           |
+| `GITHUB_APP_WEBHOOK_SECRET`           | The webhook secret you configured                                                                                                                                |
+| `REDIS_URL`                           | Redis URL for durable state. **Required in production**: without it the gate fails closed                                                                        |
+| `FRONTIER_ENABLED`                    | (Optional) Set to `false` to disable the automatic frontier quality gate. Default `true`                                                                         |
+| `FRONTIER_MODEL`                      | (Optional) Frontier judge model. Default `z-ai/glm-5.3`                                                                                                          |
+| `FRONTIER_DAILY_BUDGET_USD`           | (Optional) Daily frontier spend ceiling. Default `5`                                                                                                             |
+| `FRONTIER_MONTHLY_BUDGET_USD`         | (Optional) Monthly frontier spend ceiling. Default `50`                                                                                                          |
+| `FRONTIER_REQUIRED_CHECKS`            | (Optional) Comma-separated required checks, overriding branch protection for this deployment                                                                     |
+| `FRONTIER_TRUST_REPO_REQUIRED_CHECKS` | (Optional) Accept a repo's own `required_checks` as its policy where the platform offers no branch protection (private repos on a plan without it). Default off. |
+| `FRONTIER_MAX_CALL_USD`               | (Optional) Floor for the per-review spend reservation. Default `0.5`                                                                                             |
+| `FRONTIER_INPUT_USD_PER_MTOK`         | (Optional) Judge model input price used to derive the reservation. Default `1.4`                                                                                 |
+| `FRONTIER_OUTPUT_USD_PER_MTOK`        | (Optional) Judge model output price used to derive the reservation. Default `4.4`                                                                                |
 
 Recommended Vercel setup:
 
