@@ -261,13 +261,26 @@ export const createOctokitFrontierGitHub = (
 
     getRequiredChecks: async (
       repo: string,
-      baseBranch: string
+      baseBranch: string,
+      _ref: string,
+      perRepoChecks?: string[]
     ): Promise<RequiredChecksResult> => {
-      // An explicit override wins over branch protection, so a repository the
-      // App cannot read can still be gated by configuration.
-      const override = requiredChecksOverride();
-      if (override.length > 0) {
-        return { known: true, names: withoutSelfCheck(override) };
+      // Precedence, most specific first:
+      //   1. this repository's own committed policy (`required_checks:` in the
+      //      repo config, read by the caller from the BASE branch), so a private
+      //      repo without branch protection still has a trustworthy gate and a
+      //      PR cannot weaken the policy that evaluates it;
+      //   2. the deployment-wide `FRONTIER_REQUIRED_CHECKS` override;
+      //   3. branch protection, when the platform offers it.
+      // The global override is deliberately NOT applied to every repository by
+      // default: repositories do not share job names, so one global list both
+      // over-gates unrelated repos and misses repos whose job is named
+      // differently. It stays as an explicit operator escape hatch.
+      const explicit =
+        perRepoChecks === undefined ? requiredChecksOverride() : perRepoChecks;
+
+      if (explicit.length > 0) {
+        return { known: true, names: withoutSelfCheck(explicit) };
       }
 
       const { owner, repo: name } = split(repo);
@@ -280,11 +293,22 @@ export const createOctokitFrontierGitHub = (
         );
 
         const contexts = data.contexts ?? [];
-        const checks = (data.checks ?? []).map((check) => check.context);
+        const checks = data.checks ?? [];
+        const appIds: Record<string, number> = {};
+
+        for (const check of checks) {
+          if (typeof check.app_id === "number") {
+            appIds[check.context] = check.app_id;
+          }
+        }
 
         return {
+          appIds,
           known: true,
-          names: withoutSelfCheck([...contexts, ...checks]),
+          names: withoutSelfCheck([
+            ...contexts,
+            ...checks.map((check) => check.context),
+          ]),
         };
       } catch (error) {
         const { status, response } = error as {
@@ -342,6 +366,7 @@ export const createOctokitFrontierGitHub = (
       );
 
       return (response.data.check_runs ?? []).map((run) => ({
+        appId: run.app?.id,
         conclusion: run.conclusion,
         name: run.name,
         status: run.status,
@@ -380,8 +405,14 @@ export const createOctokitFrontierGitHub = (
         }
       );
 
+      // Only reuse a run this App created. A same-named run from another App
+      // must never be patched: doing so would rewrite someone else's check and
+      // hide the fact that the gate has not reported on this commit.
+      const ownAppId = Number(process.env.GITHUB_APP_ID);
       const previous = (existing.data.check_runs ?? []).find(
-        (run) => run.name === FRONTIER_CHECK_NAME
+        (run) =>
+          run.name === FRONTIER_CHECK_NAME &&
+          (!Number.isFinite(ownAppId) || run.app?.id === ownAppId)
       );
 
       if (previous) {

@@ -13,6 +13,13 @@ export interface PullRequestView {
 }
 
 export interface CheckRunView {
+  /**
+   * GitHub App ID that created this check run, when the API reported one.
+   * Required to tell the gate's own check apart from a same-named check
+   * published by another App: matching on `name` alone lets a spoofed or
+   * coincidentally-named check stand in for real evidence.
+   */
+  appId?: number;
   conclusion: string | null;
   name: string;
   status: string;
@@ -56,7 +63,16 @@ export interface FrontierCheckUpdate {
  * guarantee.
  */
 export type RequiredChecksResult =
-  | { known: true; names: string[] }
+  | {
+      /**
+       * Expected App ID per required context, when the platform settings name
+       * one (branch protection records `app_id` per check). A context with no
+       * recorded App ID is accepted from any issuer.
+       */
+      appIds?: Record<string, number>;
+      names: string[];
+      known: true;
+    }
   | { known: false; reason: string };
 
 export interface FrontierGitHub {
@@ -88,10 +104,17 @@ export interface FrontierGitHub {
   ) => Promise<LinkedIssue | null>;
   getPullRequest: (repo: string, prNumber: number) => Promise<PullRequestView>;
   getRepoConfig: (repo: string, ref: string) => Promise<string | null>;
+  /**
+   * Required checks for `baseBranch`.
+   *
+   * `perRepoChecks` is the repository's own trusted policy (read by the caller
+   * from the *base* branch), used when branch protection cannot be read.
+   */
   getRequiredChecks: (
     repo: string,
     baseBranch: string,
-    ref: string
+    ref: string,
+    perRepoChecks?: string[]
   ) => Promise<RequiredChecksResult>;
   listCheckRuns: (repo: string, ref: string) => Promise<CheckRunView[]>;
   postComment: (repo: string, prNumber: number, body: string) => Promise<void>;

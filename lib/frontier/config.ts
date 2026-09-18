@@ -166,6 +166,7 @@ const repoConfigSchema = z
     always_review: z.array(z.string()).optional(),
     enabled: z.boolean().optional(),
     never_review: z.array(z.string()).optional(),
+    required_checks: z.array(z.string()).optional(),
     threshold: z.number().optional(),
   })
   .partial();
@@ -174,6 +175,20 @@ export interface FrontierRepoConfig {
   alwaysReview: string[];
   enabled: boolean;
   neverReview: string[];
+  /**
+   * Explicit required-check contexts for this repository, used when branch
+   * protection cannot be read (private repos on a plan without it) and as a
+   * per-repository alternative to the global `FRONTIER_REQUIRED_CHECKS`.
+   *
+   * `undefined` means "not configured for this repository"; an empty array is a
+   * deliberate "this repository has no required CI". The two must stay
+   * distinguishable so a missing key cannot silently mean "no CI required".
+   *
+   * This is a *policy* value, so callers must read it from the base branch, not
+   * the pull request head: a PR must not be able to weaken the check policy
+   * that evaluates it.
+   */
+  requiredChecks?: string[];
   threshold: number;
 }
 
@@ -222,6 +237,7 @@ export const parseRepoConfig = (
     alwaysReview: parsed.data.always_review ?? [],
     enabled: parsed.data.enabled ?? true,
     neverReview: parsed.data.never_review ?? [],
+    requiredChecks: parsed.data.required_checks,
     threshold: parsed.data.threshold ?? DEFAULT_REPO_CONFIG.threshold,
   };
 };

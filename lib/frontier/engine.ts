@@ -212,13 +212,44 @@ interface CiStatus {
   unknown?: string;
 }
 
+/**
+ * Resolve the repository's trusted required-check policy.
+ *
+ * The policy is read from the BASE branch, never the PR head: a pull request
+ * must not be able to change the check policy that evaluates it. A repository
+ * that configures `required_checks` gets exactly those; otherwise the platform
+ * settings (or the operator override) apply.
+ */
+const resolveRequiredPolicy = async (
+  deps: FrontierEngineDeps,
+  repo: string,
+  baseBranch: string
+): Promise<string[] | undefined> => {
+  try {
+    const raw = await deps.github.getRepoConfig(repo, baseBranch);
+    const config = parseRepoConfig(raw);
+    return config.requiredChecks;
+  } catch {
+    // An unreadable config is "not configured", not "no CI required": the
+    // caller then falls back to platform settings, which fail closed if they
+    // cannot be read either.
+    return undefined;
+  }
+};
+
 const resolveCi = async (
   deps: FrontierEngineDeps,
   repo: string,
   baseBranch: string,
   ref: string
 ): Promise<CiStatus> => {
-  const resolved = await deps.github.getRequiredChecks(repo, baseBranch, ref);
+  const perRepoChecks = await resolveRequiredPolicy(deps, repo, baseBranch);
+  const resolved = await deps.github.getRequiredChecks(
+    repo,
+    baseBranch,
+    ref,
+    perRepoChecks
+  );
 
   // Fail closed: without a trustworthy view of required CI the gate cannot
   // honour its "wait for required CI before spending" guarantee.
@@ -235,8 +266,19 @@ const resolveCi = async (
 
   const required = resolved.names;
   const runs = await deps.github.listCheckRuns(repo, ref);
+  const expectedAppIds = resolved.appIds ?? {};
 
-  const requiredRuns = runs.filter((run) => required.includes(run.name));
+  // A required context is only satisfied by a run from the App the platform
+  // recorded for that context. Without this, any App could publish a check with
+  // a required context's name and stand in for evidence it did not produce.
+  const fromExpectedIssuer = (run: CheckRunView): boolean => {
+    const expected = expectedAppIds[run.name];
+    return expected === undefined || run.appId === expected;
+  };
+
+  const requiredRuns = runs.filter(
+    (run) => required.includes(run.name) && fromExpectedIssuer(run)
+  );
   const failed = requiredRuns.filter(
     (run) =>
       run.status === "completed" &&

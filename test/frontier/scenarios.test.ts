@@ -899,3 +899,117 @@ describe("a spent review budget must still leave a check on the head", () => {
     expect(["failure", "action_required"]).toContain(String(last?.conclusion));
   });
 });
+
+describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
+  const codeFiles = [
+    { additions: 10, deletions: 1, path: "lib/policy.ts", status: "modified" },
+    {
+      additions: 2,
+      deletions: 0,
+      path: "lib/policy.test.ts",
+      status: "modified",
+    },
+  ];
+
+  test("a same-named check from another App does not satisfy required CI", async () => {
+    // A required context is only satisfied by the App the platform recorded for
+    // it. A check run published by another App with the same name must not let
+    // the gate conclude CI is green and spend a review.
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 999_999,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+        requiredAppIds: { verify: 15_368 },
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(harness.model.calls).toHaveLength(0);
+    expect(outcome.calls).toBe(0);
+    // Not green: the real issuer has not reported, so the gate waits rather
+    // than treating a spoofed context as evidence.
+    expect(outcome.status).toBe("waiting_ci");
+  });
+
+  test("the expected issuer satisfies required CI and the review proceeds", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+        requiredAppIds: { verify: 15_368 },
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("a context with no recorded issuer is still accepted from any App", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 42,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(outcome.status).toBe("passed");
+  });
+
+  test("per-repo required_checks policy gates a repo with no branch protection", async () => {
+    // Private Free-plan repos cannot have branch protection, so the trusted
+    // per-repo policy is the fallback. It must actually be applied.
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "failure",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config: "frontier:\n  required_checks:\n    - verify\n",
+        diff: "+code",
+        files: codeFiles,
+        required: [],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    expect(harness.model.calls).toHaveLength(0);
+    expect(outcome.status).toBe("ci_failed");
+  });
+});
