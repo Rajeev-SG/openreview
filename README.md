@@ -250,3 +250,5 @@ bun dev
 ## License
 
 MIT
+
+<!-- canary: manual mention path verification -->
