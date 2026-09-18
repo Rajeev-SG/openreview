@@ -900,6 +900,15 @@ describe("a spent review budget must still leave a check on the head", () => {
   });
 });
 
+const CODE_DIFF = [
+  "diff --git a/lib/policy.ts b/lib/policy.ts",
+  "--- a/lib/policy.ts",
+  "+++ b/lib/policy.ts",
+  "@@ -1,2 +1,2 @@",
+  "-const a = 1;",
+  "+const a = 2;",
+].join("\n");
+
 describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
   const codeFiles = [
     { additions: 10, deletions: 1, path: "lib/policy.ts", status: "modified" },
@@ -925,7 +934,7 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
             status: "completed",
           },
         ],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
         requiredAppIds: { verify: 15_368 },
@@ -952,7 +961,7 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
             status: "completed",
           },
         ],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
         requiredAppIds: { verify: 15_368 },
@@ -976,7 +985,7 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
             status: "completed",
           },
         ],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
       },
@@ -1001,7 +1010,7 @@ describe("scenario B1 — required-check issuer binding (T02/T03)", () => {
           },
         ],
         config: "frontier:\n  required_checks:\n    - verify\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: [],
       },
@@ -1041,7 +1050,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
           },
         ],
         config: "frontier:\n  required_checks: []\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
         requiredAppIds: { verify: 15_368 },
@@ -1067,7 +1076,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
         ],
         config:
           "frontier:\n  required_checks:\n    - extra-lint\n  required_check_apps:\n    extra-lint: 15368\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["verify"],
       },
@@ -1093,7 +1102,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
         ],
         config:
           "frontier:\n  required_checks:\n    - verify\n  required_check_apps:\n    verify: 15368\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: [],
       },
@@ -1118,7 +1127,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
         ],
         config:
           "frontier:\n  required_checks:\n    - verify\n  required_check_apps:\n    verify: 15368\n",
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: [],
       },
@@ -1137,7 +1146,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
     const harness = createHarness({
       repo: {
         checks: [],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["ci/status"],
         statuses: [{ context: "ci/status", state: "success" }],
@@ -1154,7 +1163,7 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
     const harness = createHarness({
       repo: {
         checks: [],
-        diff: "+code",
+        diff: CODE_DIFF,
         files: codeFiles,
         required: ["ci/status"],
         statuses: [{ context: "ci/status", state: "failure" }],
@@ -1188,7 +1197,7 @@ describe("scenario C1 — transient provider failure is recoverable (T12/T13)", 
         status: "completed",
       },
     ],
-    diff: "+code",
+    diff: CODE_DIFF,
     files: codeFiles,
     required: ["verify"],
     requiredAppIds: { verify: 15_368 },
@@ -1296,5 +1305,471 @@ describe("scenario C1 — transient provider failure is recoverable (T12/T13)", 
 
     expect(attempts).toBe(2);
     expect(response.review.verdict).toBe("pass");
+  });
+});
+
+describe("scenario C2 — no paid call for a non-substantive repair (T07)", () => {
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: CODE_DIFF,
+    files: [
+      {
+        additions: 10,
+        deletions: 1,
+        path: "lib/policy.ts",
+        status: "modified",
+      },
+      {
+        additions: 2,
+        deletions: 0,
+        path: "lib/policy.test.ts",
+        status: "modified",
+      },
+    ],
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  const changelogDiff = [
+    "diff --git a/CHANGELOG.md b/CHANGELOG.md",
+    "--- a/CHANGELOG.md",
+    "+++ b/CHANGELOG.md",
+    "@@ -1,2 +1,3 @@",
+    " entry",
+    "+another entry",
+  ].join("\n");
+
+  const lockfileOnlyDiff = [
+    "diff --git a/bun.lock b/bun.lock",
+    "--- a/bun.lock",
+    "+++ b/bun.lock",
+    "@@ -1,2 +1,2 @@",
+    "-a",
+    "+b",
+  ].join("\n");
+
+  const reviewWithFindings = () =>
+    createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One problem.",
+          verdict: "changes_required",
+        },
+      ],
+    });
+
+  const firstReview = async (harness: ReturnType<typeof createHarness>) => {
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+    expect(outcome.status).toBe("waiting_final_signal");
+    return harness;
+  };
+
+  const signal = (harness: ReturnType<typeof createHarness>, head: string) => {
+    harness.fakeGitHub.state.pr = {
+      ...harness.fakeGitHub.state.pr,
+      headSha: head,
+    };
+    return handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: head })
+    );
+  };
+
+  test("a changelog-only repair consumes no paid slot", async () => {
+    const harness = await firstReview(reviewWithFindings());
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..changelog1": changelogDiff,
+    };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "CHANGELOG.md", status: "modified" },
+    ];
+
+    const outcome = await signal(harness, "changelog1");
+
+    expect(outcome.calls).toBe(0);
+    expect(outcome.status).toBe("waiting_final_signal");
+    expect(harness.model.calls).toHaveLength(1);
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.title).toBe(
+      "Frontier final review skipped: no substantive repair"
+    );
+  });
+
+  test("a lockfile-only repair consumes no paid slot", async () => {
+    const harness = await firstReview(reviewWithFindings());
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..lockfile1": lockfileOnlyDiff,
+    };
+
+    const outcome = await signal(harness, "lockfile1");
+
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("an empty delta consumes no paid slot", async () => {
+    const harness = await firstReview(reviewWithFindings());
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..emptyhead1": "" };
+    harness.fakeGitHub.state.deltaFiles = [];
+
+    const outcome = await signal(harness, "emptyhead1");
+
+    expect(outcome.calls).toBe(0);
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("a later substantive repair still receives the final review", async () => {
+    const harness = await firstReview(reviewWithFindings());
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..changelog1": changelogDiff,
+      "head0001..realrepair": CODE_DIFF,
+    };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "CHANGELOG.md", status: "modified" },
+    ];
+
+    const refused = await signal(harness, "changelog1");
+    expect(refused.calls).toBe(0);
+
+    // The cycle is not stranded: a real fix gets the paid final review.
+    const reviewed = await signal(harness, "realrepair");
+
+    expect(reviewed.calls).toBe(1);
+    expect(harness.model.calls).toHaveLength(2);
+  });
+});
+
+describe("scenario C3 — repair-delta classification is not fooled (T07 follow-ups)", () => {
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: CODE_DIFF,
+    files: [
+      {
+        additions: 10,
+        deletions: 1,
+        path: "lib/policy.ts",
+        status: "modified",
+      },
+      {
+        additions: 2,
+        deletions: 0,
+        path: "lib/policy.test.ts",
+        status: "modified",
+      },
+    ],
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  const firstReview = async (harness: ReturnType<typeof createHarness>) => {
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+    expect(outcome.status).toBe("waiting_final_signal");
+  };
+
+  const signal = (harness: ReturnType<typeof createHarness>, head: string) => {
+    harness.fakeGitHub.state.pr = {
+      ...harness.fakeGitHub.state.pr,
+      headSha: head,
+    };
+    return handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: head })
+    );
+  };
+
+  const withFindings = () =>
+    createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One problem.",
+          verdict: "changes_required",
+        },
+      ],
+    });
+
+  test("T07-1: an empty diff with changes reported is indeterminate, not 'nothing changed'", async () => {
+    const harness = withFindings();
+    await firstReview(harness);
+    // The diff payload is missing, but the compare API knows files changed.
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..mystery1": "" };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "lib/policy.ts", status: "modified" },
+    ];
+
+    const outcome = await signal(harness, "mystery1");
+
+    // Recoverable, not parked: a transient API problem must not cost the cycle.
+    expect(outcome.status).toBe("waiting_final_signal");
+    expect(harness.fakeGitHub.checkUpdates.at(-1)?.title).toBe(
+      "Frontier final review could not verify the delta"
+    );
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("T07-1: an unreadable file list is indeterminate, not 'nothing changed'", async () => {
+    const harness = withFindings();
+    await firstReview(harness);
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..unknown1": "" };
+    harness.fakeGitHub.state.deltaFiles = "unknown";
+
+    const outcome = await signal(harness, "unknown1");
+
+    expect(outcome.status).toBe("waiting_final_signal");
+    expect(harness.model.calls).toHaveLength(1);
+  });
+
+  test("T07-2: a deletion-only repair is not described as 'no reviewable change'", async () => {
+    const harness = withFindings();
+    await firstReview(harness);
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..deleted1": [
+        "diff --git a/lib/policy.ts b/lib/policy.ts",
+        "deleted file mode 100644",
+        "--- a/lib/policy.ts",
+        "+++ /dev/null",
+        "@@ -1,2 +0,0 @@",
+        "-const a = 1;",
+        "-const b = 2;",
+      ].join("\n"),
+    };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "lib/policy.ts", status: "removed" },
+    ];
+
+    const outcome = await signal(harness, "deleted1");
+
+    const title = harness.fakeGitHub.checkUpdates.at(-1)?.title;
+    expect(title).toContain("deletion-only");
+    expect(title).not.toContain("no substantive repair");
+    expect(outcome.calls).toBe(0);
+    // Also recoverable, so the documented re-signal path works.
+    expect(outcome.status).toBe("waiting_final_signal");
+  });
+
+  test("T07-3: an explicit force-review is not swallowed by the substantiveness refusal", async () => {
+    // `frontier-review` routes through the ordinary evaluate path, not the
+    // final-review path, so it must still reach the model.
+    const harness = withFindings();
+    await firstReview(harness);
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..forced001": "" };
+    harness.fakeGitHub.state.deltaFiles = [];
+    harness.fakeGitHub.state.pr = {
+      ...harness.fakeGitHub.state.pr,
+      headSha: "forced001",
+    };
+
+    const before = harness.model.calls.length;
+    const outcome = await handleFrontierEvent(
+      harness.deps,
+      labelEvent("frontier-review", { headSha: "forced001" })
+    );
+
+    const title = harness.fakeGitHub.checkUpdates.at(-1)?.title;
+    expect(title).not.toContain("no substantive repair");
+    // The override must actually reach the model rather than being swallowed.
+    expect(harness.model.calls.length).toBeGreaterThan(before);
+    expect(outcome.calls).toBeGreaterThan(0);
+  });
+});
+
+describe("scenario C4 — force-review is honoured but stays inside the budget", () => {
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: CODE_DIFF,
+    files: [
+      {
+        additions: 10,
+        deletions: 1,
+        path: "lib/policy.ts",
+        status: "modified",
+      },
+      {
+        additions: 2,
+        deletions: 0,
+        path: "lib/policy.test.ts",
+        status: "modified",
+      },
+    ],
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  test("repeated force labels cannot spend more than the cycle allowance", async () => {
+    const harness = createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One problem.",
+          verdict: "changes_required",
+        },
+        {
+          findings: [finding()],
+          summary: "Still a problem.",
+          verdict: "changes_required",
+        },
+        { findings: [], summary: "Fine now.", verdict: "pass" },
+        { findings: [], summary: "Fine now.", verdict: "pass" },
+      ],
+    });
+
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    // Force it several times; each push/head change would otherwise be a fresh
+    // opportunity to spend.
+    for (const head of ["forced1", "forced2", "forced3"]) {
+      harness.fakeGitHub.state.pr = {
+        ...harness.fakeGitHub.state.pr,
+        headSha: head,
+      };
+      harness.fakeGitHub.state.deltaDiffs = {
+        [`head0001..${head}`]: CODE_DIFF,
+      };
+      harness.fakeGitHub.state.deltaFiles = [
+        { path: "lib/policy.ts", status: "modified" },
+      ];
+      await handleFrontierEvent(
+        harness.deps,
+        labelEvent("frontier-review", { headSha: head })
+      );
+    }
+
+    // At most two paid calls in the cycle, however often the label is applied.
+    expect(harness.model.calls.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("scenario C5 — the second signal is reconciled, not just presence-checked", () => {
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: CODE_DIFF,
+    files: [
+      {
+        additions: 10,
+        deletions: 1,
+        path: "lib/policy.ts",
+        status: "modified",
+      },
+      {
+        additions: 2,
+        deletions: 0,
+        path: "lib/policy.test.ts",
+        status: "modified",
+      },
+    ],
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  const withFindings = () =>
+    createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One problem.",
+          verdict: "changes_required",
+        },
+        { findings: [], summary: "Fine.", verdict: "pass" },
+      ],
+    });
+
+  const firstReview = async (harness: ReturnType<typeof createHarness>) => {
+    await handleFrontierEvent(harness.deps, pullRequestEvent());
+  };
+
+  const signal = (harness: ReturnType<typeof createHarness>, head: string) => {
+    harness.fakeGitHub.state.pr = {
+      ...harness.fakeGitHub.state.pr,
+      headSha: head,
+    };
+    return handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: head })
+    );
+  };
+
+  test("F1: a partially-parsed diff is reconciled against the signal", async () => {
+    // The diff parses to a low-value path only (a changelog hunk survived a
+    // truncated payload) while the compare API reports a real source change.
+    // Trusting the parse would refuse a genuine repair as "nothing changed".
+    const harness = withFindings();
+    await firstReview(harness);
+    harness.fakeGitHub.state.deltaDiffs = {
+      "head0001..partial01": [
+        "diff --git a/CHANGELOG.md b/CHANGELOG.md",
+        "--- a/CHANGELOG.md",
+        "+++ b/CHANGELOG.md",
+        "@@ -1,2 +1,3 @@",
+        " entry",
+        "+another entry",
+      ].join("\n"),
+    };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "CHANGELOG.md", status: "modified" },
+      { path: "lib/policy.ts", status: "modified" },
+    ];
+
+    const outcome = await signal(harness, "partial01");
+
+    const title = harness.fakeGitHub.checkUpdates.at(-1)?.title;
+    expect(title).not.toBe(
+      "Frontier final review skipped: no substantive repair"
+    );
+    expect(title).toBe("Frontier final review could not verify the delta");
+    expect(outcome.status).toBe("waiting_final_signal");
+  });
+
+  test("F3: an indeterminate refusal is recoverable by re-signalling", async () => {
+    const harness = withFindings();
+    await firstReview(harness);
+
+    // First attempt: the delta cannot be read.
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..retry001": "" };
+    harness.fakeGitHub.state.deltaFiles = "unknown";
+    const first = await signal(harness, "retry001");
+    expect(first.status).toBe("waiting_final_signal");
+    expect(harness.model.calls).toHaveLength(1);
+
+    // The API recovers; the same head now reports a real change.
+    harness.fakeGitHub.state.deltaDiffs = { "head0001..retry001": CODE_DIFF };
+    harness.fakeGitHub.state.deltaFiles = [
+      { path: "lib/policy.ts", status: "modified" },
+    ];
+    const second = await signal(harness, "retry001");
+
+    expect(second.calls).toBe(1);
+    expect(harness.model.calls).toHaveLength(2);
   });
 });

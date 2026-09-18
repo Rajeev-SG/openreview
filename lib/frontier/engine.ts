@@ -22,9 +22,11 @@ import { buildPacket, renderFindingsMarkdown } from "@/lib/frontier/packet";
 import type { PacketContextFile } from "@/lib/frontier/packet";
 import {
   buildResolutionReport,
+  classifyRepairSubstance,
   parseFileChanges,
   renderResolutionMarkdown,
 } from "@/lib/frontier/resolution";
+import type { RepairSubstance } from "@/lib/frontier/resolution";
 import {
   createInitialState,
   DELIVERY_TTL_MS,
@@ -1017,10 +1019,106 @@ const runFirstReview = async (
   };
 };
 
+/**
+ * Refuse a final review that would be spent on a delta carrying no reviewable
+ * change. Returns the outcome to short-circuit with, or null to proceed.
+ *
+ * Extracted so `attemptFinalReview` stays readable; the budget is untouched
+ * here, so every refusal costs nothing.
+ */
+const refuseNonSubstantiveRepair = async (
+  deps: FrontierEngineDeps,
+  state: FrontierPrState,
+  substance: RepairSubstance,
+  force: boolean
+): Promise<FrontierOutcome | null> => {
+  const bypass = force && substance.kind !== "substantive";
+
+  if (bypass) {
+    emit(deps, "frontier.force_override", {
+      kind: substance.kind,
+      prNumber: state.prNumber,
+      repo: state.repo,
+    });
+    return null;
+  }
+
+  if (substance.kind === "substantive") {
+    return null;
+  }
+
+  if (substance.kind === "indeterminate") {
+    // An unreadable or disagreeing signal is often a transient API problem, so
+    // this stays RECOVERABLE exactly like the empty case: the signal is
+    // re-armed, so a later re-add re-enters this path and the promised
+    // "re-push the repair" actually works. Parking it in needs_manual_review
+    // made the summary's own instruction false and could cost a fresh cycle.
+    state.lifecycle = "waiting_final_signal";
+    state.finalSignalPending = false;
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier final review could not verify the repair delta: ${substance.reason}. No review slot was consumed. Re-add \`${FINAL_SIGNAL_LABEL}\` to retry once the delta can be read.`,
+      title: "Frontier final review could not verify the delta",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `repair delta indeterminate: ${substance.reason}`,
+      reviewCount: state.reviewCount,
+      status: "waiting_final_signal",
+    };
+  }
+
+  if (substance.kind === "deletion_only") {
+    // Removing the offending file is a legitimate repair. Say what happened
+    // rather than claiming nothing changed.
+    state.lifecycle = "waiting_final_signal";
+    state.finalSignalPending = false;
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier final review skipped: the repair only deletes ${substance.paths.join(", ")}. Deletion-only repairs are not re-reviewed automatically; start a new cycle with \`${NEW_CYCLE_LABEL}\` if the removal should be judged. No review slot was consumed.`,
+      title: "Frontier final review skipped: deletion-only repair",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: "deletion-only repair",
+      reviewCount: state.reviewCount,
+      status: "waiting_final_signal",
+    };
+  }
+
+  state.lifecycle = "waiting_final_signal";
+  state.finalSignalPending = false;
+  await setCheck(deps, state, {
+    conclusion: "action_required",
+    status: "completed",
+    summary:
+      "No substantive repair to review: nothing changed since review #1, or " +
+      "only docs, lockfiles, assets and generated files changed. No review " +
+      "slot was consumed. Push a real fix and re-add " +
+      `\`${FINAL_SIGNAL_LABEL}\`.`,
+    title: "Frontier final review skipped: no substantive repair",
+  });
+  return {
+    calls: 0,
+    costUsd: 0,
+    cycleId: state.cycleId,
+    detail: "no substantive repair delta",
+    reviewCount: state.reviewCount,
+    status: "waiting_final_signal",
+  };
+};
+
 const attemptFinalReview = async (
   deps: FrontierEngineDeps,
   state: FrontierPrState,
-  now: Date
+  now: Date,
+  options: { force?: boolean } = {}
 ): Promise<FrontierOutcome> => {
   const pr = await deps.github.getPullRequest(state.repo, state.prNumber);
   state.headSha = pr.headSha;
@@ -1053,6 +1151,29 @@ const attemptFinalReview = async (
   }
 
   const diff = await deps.github.getDeltaDiff(state.repo, from, pr.headSha);
+
+  // Refuse before reserving budget: a delta that carries no reviewable change
+  // must not consume one of the cycle's two paid slots. The diff alone cannot
+  // prove that, so the compare API's file list is consulted as an independent
+  // signal — a truncated or unfetchable payload must never be reported to the
+  // author as "nothing changed".
+  const fileSignal = await deps.github.getDeltaFiles(
+    state.repo,
+    from,
+    pr.headSha
+  );
+  const substance = classifyRepairSubstance({ diff, fileSignal });
+  const refusal = await refuseNonSubstantiveRepair(
+    deps,
+    state,
+    substance,
+    options.force === true
+  );
+
+  if (refusal) {
+    return refusal;
+  }
+
   const packet = buildPacket({
     baseSha: from,
     body: pr.body,
@@ -1671,6 +1792,21 @@ const evaluate = async (
   if (state.reviewCount === 1) {
     if (state.finalSignalPending) {
       return attemptFinalReview(deps, state, now);
+    }
+
+    // `frontier-review` is documented as "force a review for this PR regardless
+    // of score". Silently ignoring it once review #1 has run — which is exactly
+    // when an operator reaches for it — made the label a no-op with no
+    // explanation.
+    //
+    // It is honoured through the bounded FINAL-review path rather than by
+    // re-running review #1: a fresh review #1 would record `reviewNumber: 1`
+    // again, leaving `reviewCount` unchanged, so repeated force labels could
+    // spend without limit. The final review is already capped at one per cycle,
+    // so the two-call invariant holds however often the label is applied.
+    if (options.forceReview) {
+      state.finalSignalPending = true;
+      return attemptFinalReview(deps, state, now, { force: true });
     }
 
     return settled({

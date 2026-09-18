@@ -1,3 +1,4 @@
+import { isLowValuePath } from "@/lib/frontier/gate";
 import type {
   FrontierFinding,
   ResolutionEntry,
@@ -295,3 +296,102 @@ export const renderResolutionMarkdown = (report: ResolutionReport): string =>
         } | ${STATUS_LABEL[entry.status]} | ${entry.evidence} |`
     ),
   ].join("\n");
+
+/**
+ * Does this repair delta contain anything worth a paid re-review?
+ *
+ * A cycle buys at most two reviews, so the final review must not be spent on a
+ * delta that carries no reviewable change. Two shapes qualify:
+ *
+ * - an *empty* delta: the head moved but nothing changed between the two SHAs
+ *   (an amended or force-pushed-but-identical commit);
+ * - a *low-value-only* delta: only docs, lockfiles, assets or generated files
+ *   changed. A changelog-only commit is not a repaired defect.
+ *
+ * This is the same `isLowValuePath` the spend gate uses, so "not worth
+ * reviewing" means one thing in this codebase rather than two that disagree.
+ * Callers use it to refuse *before* reserving budget, so no paid slot is
+ * consumed and no model call is made.
+ */
+export type RepairSubstance =
+  | { kind: "substantive" }
+  | { kind: "empty" }
+  | { kind: "deletion_only"; paths: string[] }
+  | { kind: "indeterminate"; reason: string };
+
+/**
+ * Classify a repair delta.
+ *
+ * A diff string alone cannot prove a delta is empty — a truncated payload, an
+ * unrecognised format, or a failed fetch all parse to zero paths. So the caller
+ * supplies an independent `fileSignal` from the compare API, and the two must
+ * agree before "nothing changed" is asserted:
+ *
+ * - `unknown` signal  → `indeterminate`; never reported as "nothing changed".
+ * - signal lists files while the diff parsed none → `indeterminate`.
+ * - only deletions, and no surviving substantive path → `deletion_only`, which
+ *   is a real repair shape (fixing a defect by removing the file) and must not
+ *   be described as "no reviewable change".
+ * - nothing substantive survives and nothing was deleted → `empty`.
+ */
+export const classifyRepairSubstance = (input: {
+  diff: string;
+  fileSignal: { path: string; status: string }[] | "unknown";
+}): RepairSubstance => {
+  const changes = parseFileChanges(input.diff);
+  const survivors = changes.filter((change) => !change.deleted);
+
+  // A diff that already parses to a substantive surviving change needs no
+  // second opinion: the repair is real whatever the compare API says.
+  const substantiveSurvivors = survivors.filter(
+    (change) => !isLowValuePath(change.path)
+  );
+
+  if (substantiveSurvivors.length > 0) {
+    return { kind: "substantive" };
+  }
+
+  // Nothing substantive survived the diff. Only now does the independent signal
+  // matter, because "the diff parsed to nothing" and "there was nothing" look
+  // identical in a string.
+  if (input.fileSignal === "unknown") {
+    return {
+      kind: "indeterminate",
+      reason: "the changed-file list could not be read",
+    };
+  }
+
+  // Reconcile the two signals whenever the diff yields no substantive
+  // survivor — not only when it parses to zero changes. A truncated diff can
+  // still yield a low-value path (a changelog hunk that happened to parse)
+  // while the compare API knows a substantive file changed; trusting the parse
+  // there refuses a real repair and tells the author "nothing changed".
+  const signalSubstantive = input.fileSignal.filter(
+    (file) => !isLowValuePath(file.path)
+  );
+  const parsedPaths = new Set(changes.map((change) => change.path));
+  const signalOnly = signalSubstantive.filter(
+    (file) => !parsedPaths.has(file.path)
+  );
+
+  if (signalOnly.length > 0) {
+    return {
+      kind: "indeterminate",
+      reason:
+        `the compare API reports substantive change(s) the diff did not show ` +
+        `(${signalOnly.map((file) => file.path).join(", ")})`,
+    };
+  }
+
+  // A deletion of a substantive file is a repair shape, not "nothing changed".
+  const substantiveDeletions = changes
+    .filter((change) => change.deleted)
+    .map((change) => change.path)
+    .filter((path) => !isLowValuePath(path));
+
+  if (substantiveDeletions.length > 0) {
+    return { kind: "deletion_only", paths: substantiveDeletions };
+  }
+
+  return { kind: "empty" };
+};

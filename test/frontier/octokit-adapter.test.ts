@@ -229,6 +229,33 @@ describe("octokit adapter — required-check precedence", () => {
     expect(result.known).toBe(false);
   });
 
+  test("F2: a compare response at the 300-file cap is not treated as exhaustive", async () => {
+    // GitHub caps the compare endpoint's file list at 300 with no pagination.
+    // A capped list is not proof the delta is small, so it must be reported as
+    // unknown rather than passed to the caller as a complete answer.
+    const capped = Array.from({ length: 300 }, (_, i) => ({
+      filename: `generated/file-${i}.json`,
+      status: "modified",
+    }));
+
+    const client = {
+      request: routeStub(
+        [
+          [
+            "GET /repos/{owner}/{repo}/compare/",
+            () => ({ data: { files: capped } }),
+          ],
+        ],
+        () => ({ data: {} })
+      ),
+      rest: { issues: { createComment: asyncNoop, removeLabel: asyncNoop } },
+    };
+
+    const result = await adapter(client).getDeltaFiles("o/r", "a", "b");
+
+    expect(result).toBe("unknown");
+  });
+
   test("check runs are paged so a required run cannot hide behind the cap", async () => {
     const full = Array.from({ length: 100 }, (_, i) => ({
       app: { id: 1 },

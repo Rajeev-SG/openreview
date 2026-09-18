@@ -90,6 +90,20 @@ export interface FrontierGitHub {
     fromSha: string,
     toSha: string
   ) => Promise<string>;
+  /**
+   * Paths changed between two SHAs, from the compare API, or "unknown" when it
+   * cannot be read.
+   *
+   * A diff string alone cannot prove a delta is empty: a truncated payload, an
+   * unrecognised format, or a failed fetch all yield the same empty parse. This
+   * is the independent signal that distinguishes "nothing changed" from "could
+   * not tell", so a real repair is never refused on a missing payload.
+   */
+  getDeltaFiles: (
+    repo: string,
+    fromSha: string,
+    toSha: string
+  ) => Promise<{ path: string; status: string }[] | "unknown">;
   getDiff: (repo: string, prNumber: number) => Promise<string>;
   getFileContent: (
     repo: string,
