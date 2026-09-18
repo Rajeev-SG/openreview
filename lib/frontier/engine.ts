@@ -1103,12 +1103,27 @@ const attemptFinalReview = async (
     );
 
     state.lifecycle = "needs_manual_review";
+    state.finalSignalPending = false;
+
+    // The signal label is still applied, so re-adding it fires no `labeled`
+    // event and the documented retry would be an invisible no-op. Remove it
+    // here so a retry is a single, ordinary re-add of the same label rather
+    // than a remove/add dance the operator has to work out for themselves.
+    await deps.github.removeLabel(
+      state.repo,
+      state.prNumber,
+      FINAL_SIGNAL_LABEL
+    );
+
     await setCheck(deps, state, {
       conclusion: "action_required",
       status: "completed",
-      summary: `Frontier final review failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      summary:
+        `Frontier final review failed: ${
+          error instanceof Error ? error.message : String(error)
+        }. ` +
+        `The \`${FINAL_SIGNAL_LABEL}\` label was re-armed: re-add it to retry the ` +
+        "final review. No review slot was consumed.",
       title: "Frontier final review failed",
     });
     return {

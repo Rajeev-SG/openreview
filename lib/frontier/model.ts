@@ -167,7 +167,12 @@ const isPayloadError = (error: unknown): boolean => {
     error.name === "SyntaxError" ||
     error.message.startsWith(
       "Frontier model returned an invalid review payload"
-    )
+    ) ||
+    // A 200 whose body carries no completion is a provider-side hiccup, not a
+    // verdict. Observed in production (PR #31's final review), where treating
+    // it as permanent stranded the PR in needs_manual_review for a transient
+    // fault the second attempt would have passed.
+    error.message.startsWith("OpenRouter returned an empty completion")
   );
 };
 

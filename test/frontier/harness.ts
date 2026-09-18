@@ -43,6 +43,7 @@ export interface FakeRepoState {
 
 export interface FakeGitHub {
   checkUpdates: FrontierCheckUpdate[];
+  removedLabels: string[];
   comments: string[];
   github: FrontierGitHub;
   state: FakeRepoState;
@@ -57,6 +58,7 @@ export const HARNESS_NOW = new Date("2026-09-12T12:00:00.000Z");
 
 export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
   const comments: string[] = [];
+  const removedLabels: string[] = [];
   const checkUpdates: FrontierCheckUpdate[] = [];
   let checkId = 0;
 
@@ -134,6 +136,10 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
       await yieldMicrotask();
       comments.push(body);
     },
+    removeLabel: async (_repo, _prNumber, label) => {
+      await yieldMicrotask();
+      removedLabels.push(label);
+    },
     setFrontierCheck: async (update) => {
       await yieldMicrotask();
       checkUpdates.push(update);
@@ -142,7 +148,7 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
     },
   };
 
-  return { checkUpdates, comments, github, state };
+  return { checkUpdates, comments, github, removedLabels, state };
 };
 
 export interface FakeModel {

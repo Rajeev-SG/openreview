@@ -437,6 +437,26 @@ export const createOctokitFrontierGitHub = (
       });
     },
 
+    removeLabel: async (
+      repo: string,
+      prNumber: number,
+      label: string
+    ): Promise<void> => {
+      const { owner, repo: name } = split(repo);
+
+      try {
+        const clientValue = await client();
+        await clientValue.rest.issues.removeLabel({
+          issue_number: prNumber,
+          name: label,
+          owner,
+          repo: name,
+        });
+      } catch {
+        // A label that is not applied is the desired end state, not a failure.
+      }
+    },
+
     setFrontierCheck: async (update): Promise<number> => {
       const { owner, repo: name } = split(update.repo);
       const clientValue = await client();

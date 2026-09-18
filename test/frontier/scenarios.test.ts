@@ -1141,3 +1141,134 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
     expect(harness.model.calls).toHaveLength(0);
   });
 });
+
+describe("scenario C1 — transient provider failure is recoverable (T12/T13)", () => {
+  const codeFiles = [
+    { additions: 10, deletions: 1, path: "lib/policy.ts", status: "modified" },
+    {
+      additions: 2,
+      deletions: 0,
+      path: "lib/policy.test.ts",
+      status: "modified",
+    },
+  ];
+
+  const repo = () => ({
+    checks: [
+      {
+        appId: 15_368,
+        conclusion: "success",
+        name: "verify",
+        status: "completed",
+      },
+    ],
+    diff: "+code",
+    files: codeFiles,
+    required: ["verify"],
+    requiredAppIds: { verify: 15_368 },
+  });
+
+  test("a failed final review re-arms the signal label so the retry is one re-add", async () => {
+    const harness = createHarness({
+      repo: repo(),
+      reviews: [
+        {
+          findings: [finding()],
+          summary: "One material problem.",
+          verdict: "changes_required",
+        },
+        clean,
+      ],
+    });
+
+    // The engine's own final-review call fails outright, which is what a
+    // persistent provider fault looks like after the client's retries.
+    // Review #1 uses the queued review; the final review always fails with the
+    // production provider error.
+    const { model: realModel } = harness.model;
+    const failure = new Error("OpenRouter returned an empty completion");
+    const reject = async (): Promise<never> => {
+      await Promise.resolve();
+      throw failure;
+    };
+    const responses = [
+      (request: Parameters<typeof realModel.review>[0]) =>
+        realModel.review(request),
+      reject,
+      reject,
+    ];
+    let call = -1;
+    harness.deps.model = {
+      review: (request) => {
+        call += 1;
+        return responses[Math.min(call, responses.length - 1)](request);
+      },
+    };
+
+    const first = await handleFrontierEvent(harness.deps, pullRequestEvent());
+    expect(first.status).toBe("waiting_final_signal");
+
+    await pushRepair(harness, "repair0001");
+    const second = await handleFrontierEvent(
+      harness.deps,
+      labelEvent(FINAL_SIGNAL_LABEL, { headSha: "repair0001" })
+    );
+
+    expect(second.status).toBe("needs_manual_review");
+    // The one-shot label is consumed, so a re-add fires a real `labeled` event
+    // instead of being an invisible no-op.
+    expect(harness.fakeGitHub.removedLabels).toContain(FINAL_SIGNAL_LABEL);
+    const last = harness.fakeGitHub.checkUpdates.at(-1);
+    expect(last?.title).toBe("Frontier final review failed");
+    expect(last?.summary).toContain(FINAL_SIGNAL_LABEL);
+  });
+
+  test("an empty completion is classified as retryable by the model client", async () => {
+    // The production failure: a 200 with no completion was treated as
+    // permanent, so the client never retried and the PR stranded in
+    // needs_manual_review. It is a transient provider fault.
+    const { createOpenRouterFrontierModel } =
+      await import("@/lib/frontier/model");
+    const responses = [
+      () => Response.json({ choices: [{ message: { content: "" } }] }),
+      () =>
+        Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  findings: [],
+                  summary: "Fine.",
+                  verdict: "pass",
+                }),
+              },
+            },
+          ],
+          usage: { completion_tokens: 5, cost: 0.001, prompt_tokens: 10 },
+        }),
+    ];
+    let attempts = 0;
+    const fetchImpl = (async () => {
+      await Promise.resolve();
+      const next = responses[Math.min(attempts, responses.length - 1)];
+      attempts += 1;
+      return next();
+    }) as unknown as typeof fetch;
+
+    const client = createOpenRouterFrontierModel({
+      apiKey: "test",
+      fetchImpl,
+      maxAttempts: 2,
+      model: "z-ai/glm-5.3",
+    });
+
+    const response = await client.review({
+      maxTokens: 100,
+      system: "s",
+      user: "u",
+    });
+
+    expect(attempts).toBe(2);
+    expect(response.review.verdict).toBe("pass");
+  });
+});

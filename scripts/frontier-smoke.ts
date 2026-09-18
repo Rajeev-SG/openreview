@@ -208,6 +208,9 @@ const createLiveGitHub = (
         title: "PR comment",
       });
     },
+    removeLabel: async () => {
+      await Promise.resolve();
+    },
     setFrontierCheck: async (update) => {
       await settle();
       checkUpdates.push(update);

@@ -124,6 +124,13 @@ export interface FrontierGitHub {
   ) => Promise<RequiredChecksResult>;
   listCheckRuns: (repo: string, ref: string) => Promise<CheckRunView[]>;
   /**
+   * Remove a label from the PR, if present. Used to re-arm a one-shot signal
+   * label after a transient failure so the documented retry is a single re-add
+   * rather than a remove/add dance the operator has to perform by hand.
+   * Absent/not-applied labels must be a no-op, never an error.
+   */
+  removeLabel: (repo: string, prNumber: number, label: string) => Promise<void>;
+  /**
    * Legacy commit statuses at `ref`, newest first. Branch protection can
    * require a *commit status* context rather than a check run; those contexts
    * are unsatisfiable by `listCheckRuns` alone, so they are resolved here
