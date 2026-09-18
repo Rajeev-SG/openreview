@@ -1025,10 +1025,11 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
     },
   ];
 
-  test("F1: an explicit empty required_checks policy means no required CI", async () => {
-    // `required_checks: []` is a deliberate "this repository has no required
-    // CI". Collapsing it with "not configured" silently applied branch
-    // protection the repository had declared it did not want.
+  test("F1: a per-repo policy cannot remove a platform requirement", async () => {
+    // The reviewer's finding: a repository-committed file is only as
+    // trustworthy as write access to the default branch, so it must not be
+    // able to delete a requirement the platform imposes. `required_checks: []`
+    // adds nothing; it does not clear `verify`.
     const harness = createHarness({
       repo: {
         checks: [
@@ -1043,15 +1044,40 @@ describe("scenario B2 — reviewer findings on the Phase B change (PR #31)", () 
         diff: "+code",
         files: codeFiles,
         required: ["verify"],
+        requiredAppIds: { verify: 15_368 },
       },
     });
 
     const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
 
-    // The declared-empty policy wins: a failing `verify` is not required, so
-    // the review proceeds rather than reporting a CI failure the repo opted out of.
-    expect(outcome.status).toBe("passed");
-    expect(harness.model.calls).toHaveLength(1);
+    expect(outcome.status).toBe("ci_failed");
+    expect(harness.model.calls).toHaveLength(0);
+  });
+
+  test("F1: a per-repo policy may add a requirement the platform does not impose", async () => {
+    const harness = createHarness({
+      repo: {
+        checks: [
+          {
+            appId: 15_368,
+            conclusion: "success",
+            name: "verify",
+            status: "completed",
+          },
+        ],
+        config:
+          "frontier:\n  required_checks:\n    - extra-lint\n  required_check_apps:\n    extra-lint: 15368\n",
+        diff: "+code",
+        files: codeFiles,
+        required: ["verify"],
+      },
+    });
+
+    const outcome = await handleFrontierEvent(harness.deps, pullRequestEvent());
+
+    // `extra-lint` has not reported, so the added requirement blocks spend.
+    expect(outcome.status).toBe("waiting_ci");
+    expect(harness.model.calls).toHaveLength(0);
   });
 
   test("F3: a foreign-App check cannot satisfy a pinned per-repo policy", async () => {

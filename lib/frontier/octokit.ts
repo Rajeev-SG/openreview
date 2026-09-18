@@ -26,6 +26,8 @@ const CONFIG_PATHS = [
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_FILES = 500;
 const MAX_CHECK_RUNS = 100;
+/** Bounded page walk so a busy head cannot hide a required run behind the cap. */
+const MAX_CHECK_RUN_PAGES = 10;
 
 interface RepoParts {
   owner: string;
@@ -56,6 +58,84 @@ const linkedIssueNumber = (body: string): number | null => {
     /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)/i
   );
   return match ? Number(match[1]) : null;
+};
+
+/**
+ * Read the repository's platform required-status-check settings.
+ *
+ * Shared by every precedence path so "what the platform requires" has exactly
+ * one implementation. Legacy commit-status contexts are reported as unknown:
+ * they cannot be satisfied by the check-run API, and treating them as a
+ * requirement would park every PR until the wait expired.
+ */
+const readBranchProtection = async (
+  client: () => Promise<Octokit>,
+  repo: string,
+  baseBranch: string
+): Promise<RequiredChecksResult> => {
+  const { owner, repo: name } = split(repo);
+  const clientValue = await client();
+
+  try {
+    const { data } = await clientValue.request(
+      "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks",
+      { branch: baseBranch, owner, repo: name }
+    );
+
+    const contexts = data.contexts ?? [];
+    const checks: { app_id?: number | null; context: string }[] =
+      data.checks ?? [];
+    const appIds: Record<string, number> = {};
+
+    for (const check of checks) {
+      if (typeof check.app_id === "number") {
+        appIds[check.context] = check.app_id;
+      }
+    }
+
+    const checkNames = withoutSelfCheck(checks.map((check) => check.context));
+    const statusOnly = withoutSelfCheck(contexts).filter(
+      (context) => !checkNames.includes(context)
+    );
+
+    if (statusOnly.length > 0) {
+      return {
+        known: false,
+        reason:
+          `required context(s) ${statusOnly.join(", ")} are commit statuses, ` +
+          "which this gate cannot verify (it reads check runs). Convert them " +
+          "to check runs, or declare `required_checks:` in the repo config.",
+      };
+    }
+
+    return { appIds, known: true, names: checkNames };
+  } catch (error) {
+    const { status, response } = error as {
+      status?: number;
+      response?: { data?: { message?: string } };
+    };
+    const kind = classifyRequiredChecksFailure(status, response?.data?.message);
+
+    // 404, or a plan that cannot offer protection: nothing to wait for.
+    if (kind === "none") {
+      return { known: true, names: [] };
+    }
+
+    // 403: the App cannot read protection. This must NOT masquerade as "no
+    // required checks" - the caller would spend without being able to verify CI.
+    if (kind === "unreadable") {
+      const apiMessage = response?.data?.message;
+
+      return {
+        known: false,
+        reason:
+          `required CI could not be determined (${apiMessage ?? "permission denied reading branch protection"}). ` +
+          "Grant repository 'administration: read' on the App, or set FRONTIER_REQUIRED_CHECKS",
+      };
+    }
+
+    throw error;
+  }
 };
 
 export const createOctokitFrontierGitHub = (
@@ -267,115 +347,63 @@ export const createOctokitFrontierGitHub = (
       perRepoChecks?: string[],
       perRepoAppIds?: Record<string, number>
     ): Promise<RequiredChecksResult> => {
-      // Precedence, most specific first:
-      //   1. this repository's own committed policy (`required_checks:` in the
-      //      repo config, read by the caller from the BASE branch), so a private
-      //      repo without branch protection still has a trustworthy gate and a
-      //      PR cannot weaken the policy that evaluates it;
-      //   2. the deployment-wide `FRONTIER_REQUIRED_CHECKS` override;
-      //   3. branch protection, when the platform offers it.
-      // The global override is deliberately NOT applied to every repository by
-      // default: repositories do not share job names, so one global list both
-      // over-gates unrelated repos and misses repos whose job is named
-      // differently. It stays as an explicit operator escape hatch.
-      // An explicit per-repo policy is authoritative even when empty: an empty
-      // array is a deliberate "this repository has no required CI", which must
-      // stay distinguishable from "not configured" (undefined). Collapsing the
-      // two silently applied branch protection to a repo that had declared it
-      // had none.
-      if (perRepoChecks !== undefined) {
-        return {
-          appIds: perRepoAppIds ?? {},
-          known: true,
-          names: withoutSelfCheck(perRepoChecks),
-        };
-      }
-
       const override = requiredChecksOverride();
+      const platform = await readBranchProtection(client, repo, baseBranch);
+
+      // Precedence, most specific first, and deliberately ADDITIVE:
+      //   1. platform settings (branch protection) — the authority;
+      //   2. the deployment-wide `FRONTIER_REQUIRED_CHECKS` operator override;
+      //   3. the repository's own committed `required_checks`.
+      //
+      // A per-repo policy is only as trustworthy as write access to the default
+      // branch, so it can require MORE than the platform but never less. It
+      // cannot delete a platform requirement, and a platform `app_id` pin
+      // always wins over a per-repo one.
+      //
+      // When the platform offers no protection (private repos on a plan
+      // without it) there is nothing to be additive to, so the per-repo policy
+      // is the only gate available. Honouring it there is an explicit operator
+      // decision, because it is a trust channel equivalent to write access.
+      const trustRepo = /^(1|true|yes)$/i.test(
+        process.env.FRONTIER_TRUST_REPO_REQUIRED_CHECKS ?? ""
+      );
+
+      if (!platform.known) {
+        if (perRepoChecks !== undefined && trustRepo) {
+          return {
+            appIds: perRepoAppIds ?? {},
+            known: true,
+            names: withoutSelfCheck(perRepoChecks),
+          };
+        }
+        if (perRepoChecks !== undefined) {
+          return {
+            known: false,
+            reason:
+              "branch protection is unreadable and the repository's own " +
+              "`required_checks` is not trusted for this deployment. Set " +
+              "FRONTIER_TRUST_REPO_REQUIRED_CHECKS=1 to accept it as the " +
+              "repository's policy, or grant the App 'administration: read'.",
+          };
+        }
+        return platform;
+      }
 
       if (override.length > 0) {
-        return { known: true, names: withoutSelfCheck(override) };
-      }
-
-      const { owner, repo: name } = split(repo);
-      const clientValue = await client();
-
-      try {
-        const { data } = await clientValue.request(
-          "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks",
-          { branch: baseBranch, owner, repo: name }
-        );
-
-        const contexts = data.contexts ?? [];
-        const checks = data.checks ?? [];
-        const appIds: Record<string, number> = {};
-
-        for (const check of checks) {
-          if (typeof check.app_id === "number") {
-            appIds[check.context] = check.app_id;
-          }
-        }
-
-        // `contexts` are legacy commit-status contexts; `checks` are check
-        // runs. Only the latter can be satisfied by the check-run API, and
-        // commit-status matching is not implemented. Reporting a status-only
-        // context as required would park every PR until the wait expires and
-        // then fail closed, so it is surfaced as an unknown that needs
-        // configuration rather than an unsatisfiable requirement.
-        const checkNames = withoutSelfCheck(
-          checks.map((check) => check.context)
-        );
-        const statusOnly = withoutSelfCheck(contexts).filter(
-          (context) => !checkNames.includes(context)
-        );
-
-        if (statusOnly.length > 0) {
-          return {
-            known: false,
-            reason:
-              `required context(s) ${statusOnly.join(", ")} are commit statuses, ` +
-              "which this gate cannot verify (it reads check runs). Convert them " +
-              "to check runs, or declare `required_checks:` in the repo config.",
-          };
-        }
-
-        return { appIds, known: true, names: checkNames };
-      } catch (error) {
-        const { status, response } = error as {
-          status?: number;
-          response?: { data?: { message?: string } };
+        return {
+          appIds: platform.appIds ?? {},
+          known: true,
+          names: withoutSelfCheck([...override, ...(perRepoChecks ?? [])]),
         };
-        const kind = classifyRequiredChecksFailure(
-          status,
-          response?.data?.message
-        );
-
-        // 404, or a plan that cannot offer protection: there is nothing to wait for.
-        if (kind === "none") {
-          return { known: true, names: [] };
-        }
-
-        // 403: the App cannot read protection. This must NOT masquerade as
-        // "no required checks" - the caller would spend frontier tokens without
-        // being able to verify CI. Report it as unknown and let the gate fail closed.
-        if (kind === "unreadable") {
-          // 403 has several causes (missing administration permission, the repo
-          // not being selected in the installation, org restrictions). Report
-          // GitHub's own message rather than asserting one cause.
-          const apiMessage = (
-            error as { response?: { data?: { message?: string } } }
-          ).response?.data?.message;
-
-          return {
-            known: false,
-            reason:
-              `required CI could not be determined (${apiMessage ?? "permission denied reading branch protection"}). ` +
-              "Grant repository 'administration: read' on the App, or set FRONTIER_REQUIRED_CHECKS",
-          };
-        }
-
-        throw error;
       }
+
+      const names = withoutSelfCheck([
+        ...platform.names,
+        ...(perRepoChecks ?? []),
+      ]);
+      const appIds = { ...perRepoAppIds, ...platform.appIds };
+
+      return { appIds, known: true, names };
     },
 
     listCheckRuns: async (
@@ -384,23 +412,47 @@ export const createOctokitFrontierGitHub = (
     ): Promise<CheckRunView[]> => {
       const { owner, repo: name } = split(repo);
       const clientValue = await client();
-      const response = await clientValue.request(
-        "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
-        {
-          filter: "latest",
-          owner,
-          per_page: MAX_CHECK_RUNS,
-          ref,
-          repo: name,
-        }
-      );
+      // Paginate. A single capped page silently dropped required runs on a busy
+      // head: the required name then matched nothing, `failed` and `pending`
+      // were both empty, and the gate could conclude "CI green" from a list
+      // that never contained the check it was looking for.
+      const runs: {
+        appId: number | undefined;
+        conclusion: string | null;
+        name: string;
+        status: string;
+      }[] = [];
 
-      return (response.data.check_runs ?? []).map((run) => ({
-        appId: run.app?.id,
-        conclusion: run.conclusion,
-        name: run.name,
-        status: run.status,
-      }));
+      for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page += 1) {
+        const response = await clientValue.request(
+          "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+          {
+            filter: "latest",
+            owner,
+            page,
+            per_page: MAX_CHECK_RUNS,
+            ref,
+            repo: name,
+          }
+        );
+
+        const batch = response.data.check_runs ?? [];
+
+        for (const run of batch) {
+          runs.push({
+            appId: run.app?.id,
+            conclusion: run.conclusion,
+            name: run.name,
+            status: run.status,
+          });
+        }
+
+        if (batch.length < MAX_CHECK_RUNS) {
+          break;
+        }
+      }
+
+      return runs;
     },
 
     listCommitStatuses: async (

@@ -210,6 +210,11 @@ const contextCandidates = (
 interface CiStatus {
   evidence: string[];
   failed: CheckRunView[];
+  /**
+   * Required contexts that exist neither as a check run nor as a commit status
+   * at this head. A misconfiguration, not a wait.
+   */
+  neverReported?: string[];
   ok: boolean;
   pending: string[];
   required: string[];
@@ -357,6 +362,18 @@ const resolveCi = async (
       status: "completed",
     })),
   ];
+  // A required context that is neither a check run nor a commit status at this
+  // head cannot be satisfied by anything. Distinguish it from a run that is
+  // merely still queued: the first needs a configuration fix, the second needs
+  // patience, and reporting both as "waiting" hides a misconfiguration behind a
+  // timeout.
+  const neverReported = required.filter(
+    (name) =>
+      !requiredRuns.some((run) => run.name === name) &&
+      !latestStatus.has(name) &&
+      statuses.length > 0
+  );
+
   const pending = [
     ...required.filter(
       (name) =>
@@ -379,6 +396,7 @@ const resolveCi = async (
   return {
     evidence,
     failed,
+    neverReported,
     ok:
       failed.length === 0 &&
       failedStatuses.length === 0 &&
@@ -619,6 +637,27 @@ const handleCiNotReady = async (
 
   const where = phase === "review #1" ? "" : " on the repair push";
 
+  // A required context that no run and no status provides is a configuration
+  // error, not a slow CI job. Report it immediately rather than parking the PR
+  // behind the wait timeout with a message that reads like patience is needed.
+  if ((ci.neverReported?.length ?? 0) > 0) {
+    state.lifecycle = "needs_manual_review";
+    await setCheck(deps, state, {
+      conclusion: "action_required",
+      status: "completed",
+      summary: `Frontier review skipped: required context(s) ${ci.neverReported?.join(", ")} are neither a check run nor a commit status on this head. This is a configuration error, not a pending job; fix the required-check configuration. No frontier tokens were spent.`,
+      title: "Frontier review needs CI configuration",
+    });
+    return {
+      calls: 0,
+      costUsd: 0,
+      cycleId: state.cycleId,
+      detail: `required context never provided: ${ci.neverReported?.join(", ")}`,
+      reviewCount: state.reviewCount,
+      status: "needs_manual_review",
+    };
+  }
+
   if (ci.failed.length > 0) {
     state.lifecycle = "ci_failed";
     await setCheck(deps, state, {
@@ -852,6 +891,16 @@ const runFirstReview = async (
       }`,
       title: "Frontier review failed",
     });
+    // `reviewCount` is still 0 (a failed call is not recorded), so the next
+    // push retries review #1 through the ordinary path. Say that plainly
+    // instead of leaving the author to guess whether the slot was consumed.
+    await deps.github.postComment(
+      state.repo,
+      state.prNumber,
+      `Frontier review #1 could not complete (${
+        error instanceof Error ? error.message : String(error)
+      }). No review slot was consumed. Push any commit (or re-open the PR) to retry.`
+    );
     return {
       calls: 0,
       costUsd: 0,

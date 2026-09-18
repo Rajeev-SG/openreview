@@ -373,14 +373,32 @@ export const createOpenRouterFrontierModel = (
             continue;
           }
 
+          // Retry exhaustion on a retryable class means the provider was
+          // persistently unhealthy, not that the request was malformed. Say so,
+          // so an operator can tell a provider outage from a gate bug.
+          const exhausted =
+            maxAttempts > 1 &&
+            retryable &&
+            error instanceof Error &&
+            (error.message.startsWith(
+              "OpenRouter returned an empty completion"
+            ) ||
+              error.message.startsWith("OpenRouter truncated the completion"));
+
+          const detail = error instanceof Error ? error.message : String(error);
+          const message = exhausted
+            ? `provider repeatedly returned no usable completion after ${maxAttempts} attempts: ${detail}`
+            : detail;
+
           if (spentUsd > 0) {
-            throw new FrontierModelError(
-              error instanceof Error ? error.message : String(error),
-              { inputTokens: totalInput, outputTokens: totalOutput, spentUsd }
-            );
+            throw new FrontierModelError(message, {
+              inputTokens: totalInput,
+              outputTokens: totalOutput,
+              spentUsd,
+            });
           }
 
-          throw error;
+          throw exhausted ? new Error(message) : error;
         }
       }
 

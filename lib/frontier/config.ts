@@ -177,24 +177,33 @@ export interface FrontierRepoConfig {
   enabled: boolean;
   neverReview: string[];
   /**
-   * Explicit required-check contexts for this repository, used when branch
-   * protection cannot be read (private repos on a plan without it) and as a
-   * per-repository alternative to the global `FRONTIER_REQUIRED_CHECKS`.
+   * Additional required-check contexts for this repository.
    *
-   * `undefined` means "not configured for this repository"; an empty array is a
-   * deliberate "this repository has no required CI". The two must stay
-   * distinguishable so a missing key cannot silently mean "no CI required".
+   * This list is **additive**: it can require more than the platform does,
+   * never less. A per-repo file is only as trustworthy as write access to the
+   * default branch, so a repository cannot use it to delete a platform
+   * requirement, and a platform `app_id` pin always wins over one declared
+   * here. Where the platform offers no branch protection at all (private repos
+   * on a plan without it) there is nothing to be additive to, so this list
+   * becomes the repository's policy — and only then, and only with the
+   * explicit `FRONTIER_TRUST_REPO_REQUIRED_CHECKS` operator opt-in, because
+   * that is a trust channel equivalent to write access.
    *
-   * This is a *policy* value, so callers must read it from the base branch, not
-   * the pull request head: a PR must not be able to weaken the check policy
-   * that evaluates it.
+   * `undefined` means "not configured here"; an empty array means "no
+   * *additional* required CI", which is authoritative only in the
+   * no-platform-protection case above. The two stay distinguishable so a
+   * missing key never silently means "no CI required".
+   *
+   * This is a *policy* value, so callers read it from the base branch, not the
+   * pull request head: a PR must not weaken the policy that evaluates it.
    */
   requiredChecks?: string[];
   /**
    * Optional issuer pin per required context (`{ "verify": 15368 }`), so the
    * per-repo policy can bind evidence to an App just as branch protection does.
    * A context with no pin is accepted from any App, matching the platform's own
-   * behaviour for contexts that record no `app_id`.
+   * behaviour for contexts that record no `app_id`. A platform pin for the
+   * same context always overrides the pin declared here.
    */
   requiredCheckApps?: Record<string, number>;
   threshold: number;

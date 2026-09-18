@@ -101,23 +101,37 @@ export const createFakeGitHub = (state: FakeRepoState): FakeGitHub => {
       await yieldMicrotask();
 
       if (state.requiredUnknown) {
+        // Mirror the adapter: with no readable platform settings a per-repo
+        // policy is the only gate, and only with the explicit operator opt-in.
+        const trusted = /^(1|true|yes)$/i.test(
+          process.env.FRONTIER_TRUST_REPO_REQUIRED_CHECKS ?? ""
+        );
+
+        if (perRepoChecks !== undefined && trusted) {
+          return {
+            appIds: perRepoAppIds ?? {},
+            known: true,
+            names: perRepoChecks,
+          };
+        }
+
+        if (perRepoChecks !== undefined) {
+          return { known: false, reason: "per-repo policy not trusted" };
+        }
+
         return { known: false, reason: state.requiredUnknown };
       }
 
-      // Mirror the adapter: an explicit per-repo policy is authoritative even
-      // when empty, and carries its own issuer pins.
-      if (perRepoChecks !== undefined) {
-        return {
-          appIds: perRepoAppIds ?? {},
-          known: true,
-          names: perRepoChecks,
-        };
-      }
+      // Mirror the adapter's ADDITIVE precedence: platform requirements plus
+      // any per-repo additions, with a platform issuer pin winning.
+      const names = [
+        ...new Set([...state.required, ...(perRepoChecks ?? [])]),
+      ].filter((name) => name !== "frontier-quality");
 
       return {
-        appIds: state.requiredAppIds,
+        appIds: { ...perRepoAppIds, ...state.requiredAppIds },
         known: true,
-        names: state.required,
+        names,
       };
     },
     listCheckRuns: async () => {
