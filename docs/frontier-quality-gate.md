@@ -92,8 +92,33 @@ skip real code nor refuse it as oversized.
 ## 3. Required CI gates the spend
 
 Before review #1 the engine resolves the repository's **configured required
-checks** (branch-protection required status checks, or `FRONTIER_REQUIRED_CHECKS`
-as an explicit override) and inspects only those:
+checks** and inspects only those. Precedence, and it is deliberately
+**additive**:
+
+1. **Platform settings** (branch protection) — the authority. Each context's
+   recorded `app_id` is the expected issuer.
+2. **`FRONTIER_REQUIRED_CHECKS`** — a deployment-wide operator override.
+3. **`required_checks:`** in the repo config — read from the **base** branch.
+
+A repository's own committed list can require **more** than the platform does,
+never less: it cannot delete a platform requirement, and a platform `app_id`
+pin always wins over a per-repo one. A file in the repo is only as trustworthy
+as write access to the default branch, so it is not allowed to weaken the gate
+that evaluates the PR changing it. Where the platform offers no protection at
+all (private repos on a plan without it) the per-repo list becomes the policy,
+and only then, and only with the explicit `FRONTIER_TRUST_REPO_REQUIRED_CHECKS`
+operator opt-in.
+
+Evidence is matched to the **issuer**: a required context is satisfied only by
+a check run from the App the platform recorded for it, so another App cannot
+publish a same-named check and stand in for evidence it did not produce. A
+context with no recorded issuer is accepted from any App. Check runs are paged,
+so a busy head cannot hide a required run behind a page cap. Legacy commit-status
+contexts are read from the status API; a context that is neither a check run nor
+a commit status is reported as a configuration error rather than parked behind
+the wait timeout.
+
+| Required CI state | Behaviour |
 
 | Required CI state         | Behaviour                                         |
 | ------------------------- | ------------------------------------------------- |
@@ -268,6 +293,12 @@ frontier:
   threshold: 5
   always_review: ["src/agents/**", "benchmarks/**"]
   never_review: ["generated/**"]
+  # Additional required CI contexts for this repository. Additive: it can
+  # require more than the platform does, never less. Read from the base branch.
+  required_checks: ["verify", "lint"]
+  # Optional issuer pin per context, so a context is only satisfied by that App.
+  required_check_apps:
+    verify: 15368
 ```
 
 Malformed configuration falls back to defaults rather than breaking the
