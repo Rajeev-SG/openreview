@@ -338,6 +338,44 @@ ${pad(600_000)}
     expect(packet.reason).toContain("10x");
   });
 
+  test("a multi-file vendored schema tree is dropped in aggregate", () => {
+    // The OOXML shape: dozens of small per-file .xsd diffs whose combined
+    // size exceeds the diff cap even though no single section is a blob.
+    const sections = Array.from({ length: 60 }, (_value, index) => {
+      const path = `schemas/ISO-29500/schema-${index}.xsd`;
+      return `diff --git a/${path} b/${path}
+index 3333333..4444444 100644
+--- a/${path}
++++ b/${path}
+@@ -1,1 +1,2 @@
+${pad(1000)}
+`;
+    }).join("");
+    const packet = buildPacket({
+      ...base,
+      diff: sections + codeSection,
+      files: [
+        ...Array.from({ length: 60 }, (_value, index) => ({
+          additions: 1,
+          deletions: 0,
+          path: `schemas/ISO-29500/schema-${index}.xsd`,
+          status: "added" as const,
+        })),
+        {
+          additions: 2,
+          deletions: 0,
+          path: "src/pipeline.py",
+          status: "modified",
+        },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(false);
+    expect(packet.text).toContain("def crawl()");
+    expect(packet.text).toContain("schemas/ISO-29500/schema-0.xsd");
+    expect(packet.stats.diffChars).toBeLessThan(5000);
+  });
+
   test("many low-value files do not trip the file-count ceiling", () => {
     // The sibling of the char cap: breadth in generated/asset paths must not
     // refuse a PR whose reviewable change is one small source file.
