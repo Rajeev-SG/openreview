@@ -289,10 +289,14 @@ const excludeLowValueDiffSections = (diff: string): string => {
     const path = match ? match[2] : "";
 
     // Preamble before the first section carries no path; keep it.
-    if (path === "") {return true;}
+    if (path === "") {
+      return true;
+    }
 
     // Low-value by path (lockfiles, assets, docs) is always dropped.
-    if (isLowValuePath(path)) {return false;}
+    if (isLowValuePath(path)) {
+      return false;
+    }
 
     // XML schemas are size-gated: a hand-authored contract change is
     // reviewable and stays; a vendored multi-hundred-KB blob is dropped.
