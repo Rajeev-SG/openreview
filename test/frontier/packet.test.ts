@@ -218,6 +218,41 @@ index aaaaaaa..bbbbbbb 100644
     expect(packet.unsafe).toBe(false);
   });
 
+  test("vendored XML schemas are low-value and excluded like lockfiles", () => {
+    // A 1.2 MB vendored OOXML .xsd tree plus a small hand-written change must
+    // be reviewable; the schema data carries no review signal on its own.
+    const schemaSection = `diff --git a/schemas/ISO-29500/dml-main.xsd b/schemas/ISO-29500/dml-main.xsd
+index 3333333..4444444 100644
+--- a/schemas/ISO-29500/dml-main.xsd
++++ b/schemas/ISO-29500/dml-main.xsd
+@@ -1,1 +1,2 @@
+${pad(600_000)}
+`;
+    const packet = buildPacket({
+      ...base,
+      diff: schemaSection + codeSection,
+      files: [
+        {
+          additions: 2740,
+          deletions: 0,
+          path: "schemas/ISO-29500/dml-main.xsd",
+          status: "added",
+        },
+        {
+          additions: 2,
+          deletions: 0,
+          path: "src/pipeline.py",
+          status: "modified",
+        },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(false);
+    expect(packet.text).toContain("def crawl()");
+    expect(packet.text).not.toContain(pad(50));
+    expect(packet.text).toContain("schemas/ISO-29500/dml-main.xsd");
+  });
+
   test("many low-value files do not trip the file-count ceiling", () => {
     // The sibling of the char cap: breadth in generated/asset paths must not
     // refuse a PR whose reviewable change is one small source file.

@@ -214,6 +214,7 @@ const LOW_VALUE_PATTERNS = [
   "**/*.woff2",
   "**/*.ttf",
   "**/*.mp4",
+  "**/*.xsd",
   "bun.lock",
   "bun.lockb",
   "package-lock.json",
