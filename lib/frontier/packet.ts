@@ -55,6 +55,22 @@ export interface Packet {
 const UNSAFE_DIFF_RATIO = 10;
 const MAX_PACKET_FILES = 80;
 
+/**
+ * Schema-blob gates for `excludeLowValueDiffSections`. XML schemas are a mixed
+ * case: hand-authored contract changes are reviewable source, while vendored
+ * ISO/ECMA schema trees are machine-shaped reference data whose diffs carry no
+ * review signal. Two gates draw the boundary:
+ *
+ * - aggregate: when the combined .xsd diff exceeds `maxDiffChars`, the tree is
+ *   vendored bulk and every .xsd section is dropped (a real hand-authored
+ *   contract edit is far below one diff cap);
+ * - monolithic: a single .xsd section of at least `XSD_BLOB_CHARS` is a
+ *   generated blob regardless of the aggregate.
+ *
+ * The changed-file list still names every path either way.
+ */
+const XSD_BLOB_CHARS = 20_000;
+
 const SECRET_PATTERNS: { label: string; pattern: RegExp }[] = [
   {
     label: "private-key",
@@ -257,26 +273,53 @@ const contextSections = (files: { path: string; text: string }[]): string[] => {
  * Drop the diff sections of low-value paths (lockfiles, generated output,
  * assets) before the diff is sized or sent. A mixed code + lockfile PR would
  * otherwise be refused as oversized purely because of machine-generated churn,
- * even though the reviewable code is small. The complete changed-file list is
- * still rendered, so the reviewer sees every touched path.
+ * even though the reviewable code is small. Oversized XML-schema blobs are
+ * dropped by the same rule, size-gated so small hand-authored schema diffs
+ * stay reviewable. The complete changed-file list is still rendered, so the
+ * reviewer sees every touched path.
  */
-const excludeLowValueDiffSections = (diff: string): string => {
+const excludeLowValueDiffSections = (
+  diff: string,
+  maxDiffChars: number
+): string => {
   if (!diff.includes("diff --git ")) {
     return diff;
   }
 
   const parts = diff.split(/^(?=diff --git )/m);
 
-  const kept = parts.filter((part) => {
-    if (!part.startsWith("diff --git ")) {
-      // Preamble before the first section carries no path; keep it.
-      return true;
-    }
+  const xsdChars = parts
+    .map((part) => {
+      const match = /^diff --git a\/(.+?) b\/(.+)$/m.exec(part);
+      return match && match[2].endsWith(".xsd") ? part.length : 0;
+    })
+    .reduce((sum, length) => sum + length, 0);
 
+  // Past one diff cap of schema content in total, the tree is vendored bulk,
+  // not a hand-authored contract edit.
+  const dropAllXsd = xsdChars > maxDiffChars;
+
+  const kept = parts.filter((part) => {
     const match = /^diff --git a\/(.+?) b\/(.+)$/m.exec(part);
     const path = match ? match[2] : "";
 
-    return path === "" || !isLowValuePath(path);
+    // Preamble before the first section carries no path; keep it.
+    if (path === "") {
+      return true;
+    }
+
+    // Low-value by path (lockfiles, assets, docs) is always dropped.
+    if (isLowValuePath(path)) {
+      return false;
+    }
+
+    // XML schemas are size-gated: a hand-authored contract change is
+    // reviewable and stays; a vendored blob is dropped.
+    if (path.endsWith(".xsd")) {
+      return !(dropAllXsd || part.length >= XSD_BLOB_CHARS);
+    }
+
+    return true;
   });
 
   return kept.join("");
@@ -315,7 +358,10 @@ const collectUnsafeReasons = (input: PacketInput, diff: string): string[] => {
  * dropping local context first.
  */
 export const buildPacket = (input: PacketInput): Packet => {
-  const reviewableDiff = excludeLowValueDiffSections(input.diff);
+  const reviewableDiff = excludeLowValueDiffSections(
+    input.diff,
+    input.limits.maxDiffChars
+  );
   const unsafeReasons = collectUnsafeReasons(input, reviewableDiff);
 
   const body = truncate(input.body, input.limits.maxPrBodyChars);
