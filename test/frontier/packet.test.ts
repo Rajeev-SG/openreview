@@ -157,6 +157,13 @@ index aaaaaaa..bbbbbbb 100644
 +def crawl():
 +    return render()
 `;
+  const schemaSection = `diff --git a/schemas/ISO-29500/dml-main.xsd b/schemas/ISO-29500/dml-main.xsd
+index 3333333..4444444 100644
+--- a/schemas/ISO-29500/dml-main.xsd
++++ b/schemas/ISO-29500/dml-main.xsd
+@@ -1,1 +1,2 @@
+${pad(600_000)}
+`;
 
   test("excludes the lockfile diff but keeps the code diff and file list", () => {
     const packet = buildPacket({
@@ -221,13 +228,6 @@ index aaaaaaa..bbbbbbb 100644
   test("vendored XML schemas are low-value and excluded like lockfiles", () => {
     // A 1.2 MB vendored OOXML .xsd tree plus a small hand-written change must
     // be reviewable; the schema data carries no review signal on its own.
-    const schemaSection = `diff --git a/schemas/ISO-29500/dml-main.xsd b/schemas/ISO-29500/dml-main.xsd
-index 3333333..4444444 100644
---- a/schemas/ISO-29500/dml-main.xsd
-+++ b/schemas/ISO-29500/dml-main.xsd
-@@ -1,1 +1,2 @@
-${pad(600_000)}
-`;
     const packet = buildPacket({
       ...base,
       diff: schemaSection + codeSection,
@@ -251,6 +251,76 @@ ${pad(600_000)}
     expect(packet.text).toContain("def crawl()");
     expect(packet.text).not.toContain(pad(50));
     expect(packet.text).toContain("schemas/ISO-29500/dml-main.xsd");
+    // The excluded blob must not inflate the measured diff.
+    expect(packet.stats.diffChars).toBeLessThan(5_000);
+  });
+
+  test("a small hand-authored .xsd contract change stays reviewable", () => {
+    // Size-gating, not a blanket exclusion: a deliberate schema edit is source
+    // the reviewer must see, so it survives packet assembly.
+    const smallXsd = `diff --git a/config/contract.xsd b/config/contract.xsd
+index 5555555..6666666 100644
+--- a/config/contract.xsd
++++ b/config/contract.xsd
+@@ -1,1 +1,2 @@
++<xs:element name="maxRetries" type="xs:int"/>
+`;
+    const packet = buildPacket({
+      ...base,
+      diff: smallXsd + codeSection,
+      files: [
+        { additions: 1, deletions: 0, path: "config/contract.xsd", status: "modified" },
+        { additions: 2, deletions: 0, path: "src/pipeline.py", status: "modified" },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(false);
+    expect(packet.text).toContain("maxRetries");
+  });
+
+  test("a schema-blob-only PR is reviewable-empty with the file list kept", () => {
+    // The deliberate boundary for vendored schema data: the packet is safe
+    // (nothing refuses), carries no unreviewable diff body, and still names
+    // every touched path so the operator sees a contract-shaped change
+    // happened even though the blob itself was excluded.
+    const packet = buildPacket({
+      ...base,
+      diff: schemaSection,
+      files: [
+        {
+          additions: 2740,
+          deletions: 0,
+          path: "schemas/ISO-29500/dml-main.xsd",
+          status: "added",
+        },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(false);
+    expect(packet.reason).toBeUndefined();
+    expect(packet.text).toContain("schemas/ISO-29500/dml-main.xsd");
+  });
+
+  test("the 10x refusal still fires for an oversized non-excluded file", () => {
+    // Exclusion must run before the cap check and only for eligible paths;
+    // a giant runtime diff is refused exactly as before.
+    const hugeTs = `diff --git a/src/pipeline.py b/src/pipeline.py
+index aaaaaaa..bbbbbbb 100644
+--- a/src/pipeline.py
++++ b/src/pipeline.py
+@@ -1,1 +1,2 @@
+${pad(600_000)}
+`;
+    const packet = buildPacket({
+      ...base,
+      diff: hugeTs,
+      files: [
+        { additions: 2740, deletions: 0, path: "src/pipeline.py", status: "modified" },
+      ],
+    });
+
+    expect(packet.unsafe).toBe(true);
+    expect(packet.reason).toContain("10x");
   });
 
   test("many low-value files do not trip the file-count ceiling", () => {

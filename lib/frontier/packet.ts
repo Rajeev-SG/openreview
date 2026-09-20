@@ -55,6 +55,16 @@ export interface Packet {
 const UNSAFE_DIFF_RATIO = 10;
 const MAX_PACKET_FILES = 80;
 
+/**
+ * Schema-blob threshold for `excludeLowValueDiffSections`. XML schemas are a
+ * mixed case: hand-authored contract changes are reviewable source, while a
+ * vendored ISO/ECMA schema tree is machine-shaped reference data whose diff
+ * carries no review signal. The boundary is drawn by size, not by path alone —
+ * a small .xsd diff stays in the packet, a blob this large is dropped the same
+ * way a lockfile body is.
+ */
+const XSD_BLOB_CHARS = 20_000;
+
 const SECRET_PATTERNS: { label: string; pattern: RegExp }[] = [
   {
     label: "private-key",
@@ -257,8 +267,10 @@ const contextSections = (files: { path: string; text: string }[]): string[] => {
  * Drop the diff sections of low-value paths (lockfiles, generated output,
  * assets) before the diff is sized or sent. A mixed code + lockfile PR would
  * otherwise be refused as oversized purely because of machine-generated churn,
- * even though the reviewable code is small. The complete changed-file list is
- * still rendered, so the reviewer sees every touched path.
+ * even though the reviewable code is small. Oversized XML-schema blobs are
+ * dropped by the same rule, size-gated so small hand-authored schema diffs
+ * stay reviewable. The complete changed-file list is still rendered, so the
+ * reviewer sees every touched path.
  */
 const excludeLowValueDiffSections = (diff: string): string => {
   if (!diff.includes("diff --git ")) {
@@ -276,7 +288,15 @@ const excludeLowValueDiffSections = (diff: string): string => {
     const match = /^diff --git a\/(.+?) b\/(.+)$/m.exec(part);
     const path = match ? match[2] : "";
 
-    return path === "" || !isLowValuePath(path);
+    // Preamble before the first section carries no path; keep it.
+    if (path === "") return true;
+
+    // Low-value by path (lockfiles, assets, docs) is always dropped.
+    if (isLowValuePath(path)) return false;
+
+    // XML schemas are size-gated: a hand-authored contract change is
+    // reviewable and stays; a vendored multi-hundred-KB blob is dropped.
+    return !(path.endsWith(".xsd") && part.length >= XSD_BLOB_CHARS);
   });
 
   return kept.join("");
