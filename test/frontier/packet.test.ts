@@ -252,7 +252,7 @@ ${pad(600_000)}
     expect(packet.text).not.toContain(pad(50));
     expect(packet.text).toContain("schemas/ISO-29500/dml-main.xsd");
     // The excluded blob must not inflate the measured diff.
-    expect(packet.stats.diffChars).toBeLessThan(5_000);
+    expect(packet.stats.diffChars).toBeLessThan(5000);
   });
 
   test("a small hand-authored .xsd contract change stays reviewable", () => {
@@ -269,8 +269,18 @@ index 5555555..6666666 100644
       ...base,
       diff: smallXsd + codeSection,
       files: [
-        { additions: 1, deletions: 0, path: "config/contract.xsd", status: "modified" },
-        { additions: 2, deletions: 0, path: "src/pipeline.py", status: "modified" },
+        {
+          additions: 1,
+          deletions: 0,
+          path: "config/contract.xsd",
+          status: "modified",
+        },
+        {
+          additions: 2,
+          deletions: 0,
+          path: "src/pipeline.py",
+          status: "modified",
+        },
       ],
     });
 
@@ -315,7 +325,12 @@ ${pad(600_000)}
       ...base,
       diff: hugeTs,
       files: [
-        { additions: 2740, deletions: 0, path: "src/pipeline.py", status: "modified" },
+        {
+          additions: 2740,
+          deletions: 0,
+          path: "src/pipeline.py",
+          status: "modified",
+        },
       ],
     });
 
